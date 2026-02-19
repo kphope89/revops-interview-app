@@ -30,6 +30,7 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
   const previousTranscriptRef = useRef('')
   const processedFinalCountRef = useRef(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const transcriptEntriesRef = useRef<TranscriptEntry[]>([])
 
   // Timer
   useEffect(() => {
@@ -44,6 +45,11 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
       if (timerRef.current) clearInterval(timerRef.current)
     }
   }, [status, sessionStarted])
+
+  // Keep ref in sync so analyzeQuestion always reads current entries regardless of closure age
+  useEffect(() => {
+    transcriptEntriesRef.current = transcriptEntries
+  }, [transcriptEntries])
 
   // Process new final transcript segments
   useEffect(() => {
@@ -87,17 +93,18 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
         if (result.success && result.data?.isQuestion && result.data.question) {
           const question = result.data.question
           const type = result.data.type as TranscriptEntry['questionType']
+          const questionId = crypto.randomUUID()
 
-          // Mark transcript entries as question
+          // Mark transcript entries as question and link to the analyzed question
           setTranscriptEntries((prev) =>
             prev.map((entry) =>
               entry.text.toLowerCase().includes(question.toLowerCase().slice(0, 30))
-                ? { ...entry, isQuestion: true, questionType: type }
+                ? { ...entry, isQuestion: true, questionType: type, relatedQuestionId: questionId }
                 : entry
             )
           )
 
-          analyzeQuestion(question)
+          analyzeQuestion(question, questionId)
         }
       } catch {
         // Silent fail for detection
@@ -106,10 +113,10 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
     []
   )
 
-  const analyzeQuestion = useCallback(async (question: string) => {
-    const id = crypto.randomUUID()
+  const analyzeQuestion = useCallback(async (question: string, id?: string) => {
+    const questionId = id ?? crypto.randomUUID()
     const entry: AnalyzedQuestion = {
-      id,
+      id: questionId,
       question,
       timestamp: new Date(),
       analysis: null,
@@ -117,12 +124,14 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
     }
 
     setAnalyzedQuestions((prev) => [entry, ...prev])
-    setSelectedQuestionId(id)
+    setSelectedQuestionId(questionId)
     setIsAnalyzing(true)
 
     try {
       const knowledgeContext = getKnowledgeContext()
-      const conversationHistory = transcriptEntries
+      // Read from ref so this always reflects current transcript, even when called
+      // from checkForQuestion which closes over an older version of analyzeQuestion
+      const conversationHistory = transcriptEntriesRef.current
         .slice(-10)
         .map((e) => e.text)
         .join(' ')
@@ -136,7 +145,7 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
 
       setAnalyzedQuestions((prev) =>
         prev.map((q) =>
-          q.id === id
+          q.id === questionId
             ? {
                 ...q,
                 isLoading: false,
@@ -149,13 +158,13 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
     } catch (e) {
       setAnalyzedQuestions((prev) =>
         prev.map((q) =>
-          q.id === id ? { ...q, isLoading: false, error: String(e) } : q
+          q.id === questionId ? { ...q, isLoading: false, error: String(e) } : q
         )
       )
     }
 
     setIsAnalyzing(false)
-  }, [jobContext, transcriptEntries])
+  }, [jobContext])
 
   const handleManualQuestion = useCallback(
     (question: string) => {

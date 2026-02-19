@@ -18,6 +18,7 @@ export interface TranscriptEntry {
   timestamp: Date
   isQuestion: boolean
   questionType?: 'behavioral' | 'technical' | 'situational' | 'general'
+  relatedQuestionId?: string
 }
 
 export interface QuestionAnalysis {

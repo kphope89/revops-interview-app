@@ -68,7 +68,7 @@ export default function LiveTranscript({
                 ? 'bg-blue-500/10 border border-blue-500/30 cursor-pointer hover:bg-blue-500/15'
                 : 'bg-slate-800/50 hover:bg-slate-800'
             }`}
-            onClick={() => entry.isQuestion && onQuestionClick(entry.id)}
+            onClick={() => entry.isQuestion && entry.relatedQuestionId && onQuestionClick(entry.relatedQuestionId)}
           >
             <div className="flex items-start gap-2">
               {entry.isQuestion && (
@@ -91,7 +91,7 @@ export default function LiveTranscript({
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    onQuestionClick(entry.id)
+                    if (entry.relatedQuestionId) onQuestionClick(entry.relatedQuestionId)
                   }}
                   className="opacity-0 group-hover:opacity-100 flex-shrink-0 text-xs text-blue-400 hover:text-blue-300 transition-opacity"
                 >

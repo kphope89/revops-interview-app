@@ -28,6 +28,7 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
   const [description, setDescription] = useState('')
   const [fetchingUrl, setFetchingUrl] = useState(false)
   const [urlError, setUrlError] = useState('')
+  const [fetchedUrl, setFetchedUrl] = useState<string | undefined>(undefined)
 
   const handleFetchUrl = async () => {
     if (!url.trim()) return
@@ -37,6 +38,7 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
       const result = await window.electronAPI.fetchJobUrl(url.trim())
       if (result.success && result.text) {
         setDescription(result.text)
+        setFetchedUrl(url.trim())
         setInputMode('paste')
       } else {
         setUrlError(result.error || 'Could not fetch that URL. Try pasting the description directly.')
@@ -62,7 +64,7 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
       title: title || 'Untitled Role',
       company: company || 'Unknown Company',
       description: description.trim(),
-      url: inputMode === 'url' ? url : undefined
+      url: fetchedUrl ?? (inputMode === 'url' ? url.trim() || undefined : undefined)
     })
   }
 
@@ -172,7 +174,7 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
                 className="input h-56 resize-none font-mono text-sm leading-relaxed"
                 placeholder="Paste the full job description here. Include responsibilities, requirements, and any context about the team and company. The more detail, the better the coaching."
                 value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                onChange={(e) => { setDescription(e.target.value); setFetchedUrl(undefined) }}
               />
             </div>
           )}
