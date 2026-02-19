@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { AnalyzedQuestion, JobContext, QuestionAnalysis } from '../types'
-import { REVOPS_COMPETENCIES } from '../data/revops-knowledge'
 
 interface Props {
   questions: AnalyzedQuestion[]
@@ -173,6 +172,55 @@ export default function ResponsePanel({
   )
 }
 
+// Extracts the partial suggestedResponse value from a streaming JSON string.
+// Returns empty string until the field starts appearing.
+function extractStreamingResponse(accumulatedText: string): string {
+  const marker = '"suggestedResponse": "'
+  const idx = accumulatedText.indexOf(marker)
+  if (idx === -1) return ''
+  const raw = accumulatedText.slice(idx + marker.length)
+  // If the field is complete (closing quote followed by comma + next key), trim it
+  const completeMatch = raw.match(/^([\s\S]*?)",?\s*"toolsToMention"/)
+  const content = completeMatch ? completeMatch[1] : raw
+  // Unescape JSON string sequences for readable display
+  return content
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+}
+
+function StreamingPreview({ text }: { text: string }) {
+  const preview = extractStreamingResponse(text)
+  return (
+    <div className="p-5 space-y-4">
+      <div className="flex items-center gap-2">
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"
+            style={{ animationDelay: `${i * 0.15}s` }}
+          />
+        ))}
+        <span className="text-xs text-blue-400">Crafting response...</span>
+      </div>
+      {preview && (
+        <div>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2.5">
+            Suggested Response
+          </h3>
+          <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+            <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">
+              {preview}
+              <span className="inline-block w-0.5 h-4 bg-blue-400 ml-0.5 animate-pulse align-middle" />
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function QuestionCoaching({
   question,
   onCopy,
@@ -182,6 +230,10 @@ function QuestionCoaching({
   onCopy: (text: string) => void
   copied: boolean
 }) {
+  if (question.isLoading && question.streamingText) {
+    return <StreamingPreview text={question.streamingText} />
+  }
+
   if (question.isLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4">

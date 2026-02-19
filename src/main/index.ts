@@ -99,12 +99,13 @@ app.whenReady().then(() => {
     }
   })
 
-  // ── IPC: Analyze question via Claude ──────────────────────────────────────
-  ipcMain.handle(
-    'claude:analyze',
+  // ── IPC: Analyze question via Claude (streaming) ──────────────────────────
+  ipcMain.on(
+    'claude:analyze-stream',
     async (
-      _event,
+      event,
       payload: {
+        requestId: string
         question: string
         jobDescription: string
         knowledgeContext: string
@@ -115,7 +116,13 @@ app.whenReady().then(() => {
       const model = store.get('model', 'claude-opus-4-5')
 
       if (!apiKey) {
-        return { success: false, error: 'No API key configured. Please add your Anthropic API key in Settings.' }
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('claude:stream-error', {
+            requestId: payload.requestId,
+            error: 'No API key configured. Please add your Anthropic API key in Settings.'
+          })
+        }
+        return
       }
 
       try {
@@ -180,7 +187,7 @@ Format your response as JSON:
   "confidence": "high|medium|low - how well this question maps to RevOps"
 }`
 
-        const message = await client.messages.create({
+        const stream = client.messages.stream({
           model,
           max_tokens: 1500,
           system: systemPrompt,
@@ -192,17 +199,23 @@ Format your response as JSON:
           ]
         })
 
-        const content = message.content[0]
-        if (content.type !== 'text') throw new Error('Unexpected response type')
+        let fullText = ''
+        stream.on('text', (delta) => {
+          fullText += delta
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('claude:stream-chunk', { requestId: payload.requestId, delta })
+          }
+        })
 
-        // Parse JSON response
-        const jsonMatch = content.text.match(/\{[\s\S]*\}/)
-        if (!jsonMatch) throw new Error('Could not parse JSON response')
+        await stream.done()
 
-        const parsed = JSON.parse(jsonMatch[0])
-        return { success: true, data: parsed }
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('claude:stream-done', { requestId: payload.requestId, fullText })
+        }
       } catch (err) {
-        return { success: false, error: String(err) }
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('claude:stream-error', { requestId: payload.requestId, error: String(err) })
+        }
       }
     }
   )

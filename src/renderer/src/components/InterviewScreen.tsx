@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { JobContext, Settings, AnalyzedQuestion, TranscriptEntry } from '../types'
+import { JobContext, Settings, AnalyzedQuestion, TranscriptEntry, QuestionAnalysis } from '../types'
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
 import { getKnowledgeContext } from '../data/revops-knowledge'
 import LiveTranscript from './LiveTranscript'
@@ -113,57 +113,89 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
     []
   )
 
-  const analyzeQuestion = useCallback(async (question: string, id?: string) => {
+  const analyzeQuestion = useCallback((question: string, id?: string) => {
     const questionId = id ?? crypto.randomUUID()
     const entry: AnalyzedQuestion = {
       id: questionId,
       question,
       timestamp: new Date(),
       analysis: null,
-      isLoading: true
+      isLoading: true,
+      streamingText: ''
     }
 
     setAnalyzedQuestions((prev) => [entry, ...prev])
     setSelectedQuestionId(questionId)
     setIsAnalyzing(true)
 
-    try {
-      const knowledgeContext = getKnowledgeContext()
-      // Read from ref so this always reflects current transcript, even when called
-      // from checkForQuestion which closes over an older version of analyzeQuestion
-      const conversationHistory = transcriptEntriesRef.current
-        .slice(-10)
-        .map((e) => e.text)
-        .join(' ')
+    // Clean up any lingering listeners from a prior analysis
+    window.electronAPI.removeStreamListeners()
 
-      const result = await window.electronAPI.analyzeQuestion({
+    const knowledgeContext = getKnowledgeContext()
+    // Read from ref so this always reflects current transcript, even when called
+    // from checkForQuestion which closes over an older version of analyzeQuestion
+    const conversationHistory = transcriptEntriesRef.current
+      .slice(-10)
+      .map((e) => e.text)
+      .join(' ')
+
+    window.electronAPI.onStreamChunk(({ requestId, delta }) => {
+      if (requestId !== questionId) return
+      setAnalyzedQuestions((prev) =>
+        prev.map((q) =>
+          q.id === questionId ? { ...q, streamingText: (q.streamingText ?? '') + delta } : q
+        )
+      )
+    })
+
+    window.electronAPI.onStreamDone(({ requestId, fullText }) => {
+      if (requestId !== questionId) return
+      window.electronAPI.removeStreamListeners()
+      try {
+        const jsonMatch = fullText.match(/\{[\s\S]*\}/)
+        if (!jsonMatch) throw new Error('Could not parse JSON response')
+        const parsed = JSON.parse(jsonMatch[0]) as QuestionAnalysis
+        setAnalyzedQuestions((prev) =>
+          prev.map((q) =>
+            q.id === questionId
+              ? { ...q, isLoading: false, analysis: parsed, streamingText: undefined }
+              : q
+          )
+        )
+      } catch (e) {
+        setAnalyzedQuestions((prev) =>
+          prev.map((q) =>
+            q.id === questionId
+              ? { ...q, isLoading: false, error: String(e), streamingText: undefined }
+              : q
+          )
+        )
+      }
+      setIsAnalyzing(false)
+    })
+
+    window.electronAPI.onStreamError(({ requestId, error }) => {
+      if (requestId !== questionId) return
+      window.electronAPI.removeStreamListeners()
+      setAnalyzedQuestions((prev) =>
+        prev.map((q) =>
+          q.id === questionId
+            ? { ...q, isLoading: false, error, streamingText: undefined }
+            : q
+        )
+      )
+      setIsAnalyzing(false)
+    })
+
+    window.electronAPI.analyzeQuestionStream(
+      {
         question,
         jobDescription: `${jobContext.title} at ${jobContext.company}\n\n${jobContext.description}`,
         knowledgeContext,
         conversationHistory
-      })
-
-      setAnalyzedQuestions((prev) =>
-        prev.map((q) =>
-          q.id === questionId
-            ? {
-                ...q,
-                isLoading: false,
-                analysis: result.success ? result.data || null : null,
-                error: result.success ? undefined : result.error
-              }
-            : q
-        )
-      )
-    } catch (e) {
-      setAnalyzedQuestions((prev) =>
-        prev.map((q) =>
-          q.id === questionId ? { ...q, isLoading: false, error: String(e) } : q
-        )
-      )
-    }
-
-    setIsAnalyzing(false)
+      },
+      questionId
+    )
   }, [jobContext])
 
   const handleManualQuestion = useCallback(

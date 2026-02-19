@@ -36,6 +36,7 @@ export interface AnalyzedQuestion {
   timestamp: Date
   analysis: QuestionAnalysis | null
   isLoading: boolean
+  streamingText?: string
   error?: string
 }
 
@@ -43,12 +44,19 @@ export interface ElectronAPI {
   getSettings: () => Promise<Settings>
   saveSettings: (settings: Settings) => Promise<boolean>
   fetchJobUrl: (url: string) => Promise<{ success: boolean; text?: string; error?: string }>
-  analyzeQuestion: (payload: {
-    question: string
-    jobDescription: string
-    knowledgeContext: string
-    conversationHistory: string
-  }) => Promise<{ success: boolean; data?: QuestionAnalysis; error?: string }>
+  analyzeQuestionStream: (
+    payload: {
+      question: string
+      jobDescription: string
+      knowledgeContext: string
+      conversationHistory: string
+    },
+    requestId: string
+  ) => void
+  onStreamChunk: (callback: (data: { requestId: string; delta: string }) => void) => void
+  onStreamDone: (callback: (data: { requestId: string; fullText: string }) => void) => void
+  onStreamError: (callback: (data: { requestId: string; error: string }) => void) => void
+  removeStreamListeners: () => void
   detectQuestion: (payload: {
     transcript: string
     previousTranscript: string
