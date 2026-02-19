@@ -8,6 +8,7 @@ import Anthropic from '@anthropic-ai/sdk'
 const store = new Store<{
   apiKey: string
   model: string
+  resume: string
 }>()
 
 function createWindow(): void {
@@ -64,13 +65,15 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:get', () => {
     return {
       apiKey: store.get('apiKey', ''),
-      model: store.get('model', 'claude-opus-4-5')
+      model: store.get('model', 'claude-opus-4-5'),
+      resume: store.get('resume', '')
     }
   })
 
-  ipcMain.handle('settings:save', (_event, settings: { apiKey: string; model: string }) => {
+  ipcMain.handle('settings:save', (_event, settings: { apiKey: string; model: string; resume: string }) => {
     store.set('apiKey', settings.apiKey)
     store.set('model', settings.model)
+    store.set('resume', settings.resume ?? '')
     return true
   })
 
@@ -110,6 +113,7 @@ app.whenReady().then(() => {
         jobDescription: string
         knowledgeContext: string
         conversationHistory: string
+        resume: string
       }
     ) => {
       const apiKey = store.get('apiKey', '')
@@ -128,6 +132,10 @@ app.whenReady().then(() => {
       try {
         const client = new Anthropic({ apiKey })
 
+        const candidateSection = payload.resume?.trim()
+          ? `\n## Candidate Background\n${payload.resume.trim()}\n\nWhen writing suggestedResponse: where naturally relevant, draw on 1-2 specific details from the candidate's background — actual companies, measurable outcomes, named tools. If the candidate's background doesn't offer a relevant anchor for this question, frame the response in first person without fabricating specifics.\n`
+          : ''
+
         const systemPrompt = `You are an expert RevOps interview coach preparing a candidate for a Senior Director / VP Revenue Operations role at a late-stage startup.
 
 ## RevOps Knowledge Base
@@ -135,7 +143,7 @@ ${payload.knowledgeContext}
 
 ## Target Job Description
 ${payload.jobDescription || 'No specific job description provided. Give general RevOps best-practice answers.'}
-
+${candidateSection}
 ## Competency Classification
 Classify the question into EXACTLY ONE of these 14 competencies — use the exact label string:
 - Revenue Strategy & GTM Planning
@@ -268,6 +276,89 @@ Return JSON only: {"isQuestion": boolean, "question": "the interview question be
         return { success: true, data: JSON.parse(jsonMatch[0]) }
       } catch {
         return { success: true, data: { isQuestion: false } }
+      }
+    }
+  )
+
+  // ── IPC: Generate predicted prep questions from job description ────────────
+  ipcMain.handle(
+    'claude:prep-questions',
+    async (
+      _event,
+      payload: { jobDescription: string; knowledgeContext: string; resume: string }
+    ) => {
+      const apiKey = store.get('apiKey', '')
+      const model = store.get('model', 'claude-opus-4-5')
+
+      if (!apiKey) return { success: false, error: 'No API key configured.' }
+
+      try {
+        const client = new Anthropic({ apiKey })
+
+        const candidateSection = payload.resume?.trim()
+          ? `\n## Candidate Background\n${payload.resume.trim()}\n`
+          : ''
+
+        const systemPrompt = `You are a senior RevOps hiring manager and interview coach preparing a candidate for a specific interview.
+
+## RevOps Knowledge Base
+${payload.knowledgeContext}
+
+## Target Job Description
+${payload.jobDescription || 'No specific job description provided.'}
+${candidateSection}
+## Your Task
+Generate exactly 6 to 8 interview questions that are highly likely to be asked in this specific interview, given the job description and the candidate's background.
+
+## Question Selection Criteria
+- Prioritize questions that test competencies explicitly mentioned in the job description
+- Include at least one behavioral question (e.g., "Tell me about a time when...")
+- Include at least one design or scenario question (e.g., "How would you design...", "Walk me through how you'd approach...")
+- Include at least one metrics question directly tied to RevOps performance measurement
+- If candidate background is provided: include 1-2 questions that probe depth on their strongest claimed areas
+- Do NOT generate variations of the same question — cover distinct competency areas
+- Questions must be specific and realistic — not generic filler like "Tell me about yourself"
+
+## Competency Labels — use exact strings only:
+Revenue Strategy & GTM Planning | Sales Operations & Pipeline Management | Marketing Operations & Lead Management | Customer Success Operations | Data & Analytics | Technology Stack Management | Forecasting & Revenue Intelligence | Compensation & Quota Design | Process Design & Optimization | Cross-Functional Alignment | Change Management | AI-First RevOps Architecture | Prioritization & Portfolio Management | KPIs & Metrics
+
+## Output Format
+Return ONLY a valid JSON array. No preamble, no trailing explanation, no markdown code fences:
+[
+  {
+    "question": "The full interview question exactly as the interviewer would phrase it",
+    "competency": "Exact competency label from the list above",
+    "rationale": "One sentence explaining why this question is likely given this specific JD and candidate"
+  }
+]`
+
+        const message = await client.messages.create({
+          model,
+          max_tokens: 1200,
+          system: systemPrompt,
+          messages: [
+            {
+              role: 'user',
+              content: 'Generate the predicted interview questions for this role and candidate.'
+            }
+          ]
+        })
+
+        const content = message.content[0]
+        if (content.type !== 'text') return { success: false, error: 'Unexpected response type.' }
+
+        const jsonMatch = content.text.match(/\[[\s\S]*\]/)
+        if (!jsonMatch) return { success: false, error: 'Could not parse questions from response.' }
+
+        const rawQuestions = JSON.parse(jsonMatch[0]) as Array<{
+          question: string
+          competency: string
+          rationale: string
+        }>
+
+        return { success: true, questions: rawQuestions }
+      } catch (err) {
+        return { success: false, error: String(err) }
       }
     }
   )

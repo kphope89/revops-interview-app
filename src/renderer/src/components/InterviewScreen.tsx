@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { JobContext, Settings, AnalyzedQuestion, TranscriptEntry, QuestionAnalysis } from '../types'
+import { JobContext, Settings, AnalyzedQuestion, TranscriptEntry, QuestionAnalysis, PrepQuestionsState } from '../types'
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
 import { getKnowledgeContext } from '../data/revops-knowledge'
 import LiveTranscript from './LiveTranscript'
@@ -14,7 +14,7 @@ interface Props {
 const QUESTION_CHECK_DEBOUNCE = 3000 // ms after speech pause before checking for questions
 const MIN_TRANSCRIPT_WORDS = 6
 
-export default function InterviewScreen({ jobContext, settings: _settings }: Props) {
+export default function InterviewScreen({ jobContext, settings }: Props) {
   const { status, interimTranscript, finalTranscripts, error, start, stop, pause, resume, clearTranscripts } =
     useSpeechRecognition()
 
@@ -24,6 +24,7 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [sessionStarted, setSessionStarted] = useState(false)
+  const [prepState, setPrepState] = useState<PrepQuestionsState>({ status: 'idle', questions: [] })
 
   const lastCheckedTranscriptRef = useRef('')
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -31,6 +32,9 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
   const processedFinalCountRef = useRef(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const transcriptEntriesRef = useRef<TranscriptEntry[]>([])
+  // Ref so analyzeQuestion always reads the latest settings without being in the dependency array
+  const settingsRef = useRef(settings)
+  useEffect(() => { settingsRef.current = settings }, [settings])
 
   // Timer
   useEffect(() => {
@@ -50,6 +54,31 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
   useEffect(() => {
     transcriptEntriesRef.current = transcriptEntries
   }, [transcriptEntries])
+
+  // Generate predicted questions from the job description on mount
+  useEffect(() => {
+    const run = async () => {
+      setPrepState({ status: 'loading', questions: [] })
+      try {
+        const result = await window.electronAPI.generatePrepQuestions({
+          jobDescription: `${jobContext.title} at ${jobContext.company}\n\n${jobContext.description}`,
+          knowledgeContext: getKnowledgeContext(),
+          resume: settingsRef.current.resume ?? ''
+        })
+        if (result.success && result.questions) {
+          setPrepState({
+            status: 'ready',
+            questions: result.questions.map((q) => ({ ...q, id: q.id ?? crypto.randomUUID() }))
+          })
+        } else {
+          setPrepState({ status: 'error', questions: [], error: result.error })
+        }
+      } catch (err) {
+        setPrepState({ status: 'error', questions: [], error: String(err) })
+      }
+    }
+    run()
+  }, []) // intentionally empty — run once on mount
 
   // Process new final transcript segments
   useEffect(() => {
@@ -192,7 +221,8 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
         question,
         jobDescription: `${jobContext.title} at ${jobContext.company}\n\n${jobContext.description}`,
         knowledgeContext,
-        conversationHistory
+        conversationHistory,
+        resume: settingsRef.current.resume ?? ''
       },
       questionId
     )
@@ -306,6 +336,8 @@ export default function InterviewScreen({ jobContext, settings: _settings }: Pro
           onSelectQuestion={setSelectedQuestionId}
           jobContext={jobContext}
           onManualQuestion={handleManualQuestion}
+          prepState={prepState}
+          onPracticeQuestion={handleManualQuestion}
         />
       </div>
     </div>

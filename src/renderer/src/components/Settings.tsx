@@ -16,6 +16,8 @@ const MODELS = [
 export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
   const [apiKey, setApiKey] = useState(settings.apiKey)
   const [model, setModel] = useState(settings.model)
+  const [resume, setResume] = useState(settings.resume ?? '')
+  const [resumeExpanded, setResumeExpanded] = useState(false)
   const [showKey, setShowKey] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
@@ -25,18 +27,15 @@ export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
     setTesting(true)
     setTestResult(null)
     try {
-      // Save temporarily and test
-      await window.electronAPI.saveSettings({ apiKey: apiKey.trim(), model })
-      const res = await window.electronAPI.analyzeQuestion({
-        question: 'What is RevOps?',
-        jobDescription: 'Test',
-        knowledgeContext: 'Test',
-        conversationHistory: ''
+      await window.electronAPI.saveSettings({ apiKey: apiKey.trim(), model, resume: resume.trim() })
+      const res = await window.electronAPI.detectQuestion({
+        transcript: 'How do you approach RevOps?',
+        previousTranscript: ''
       })
       if (res.success) {
         setTestResult({ ok: true, msg: 'Connection successful! API key is valid.' })
       } else {
-        setTestResult({ ok: false, msg: res.error || 'Connection failed.' })
+        setTestResult({ ok: false, msg: 'Connection failed. Check your API key.' })
       }
     } catch (e) {
       setTestResult({ ok: false, msg: String(e) })
@@ -45,8 +44,10 @@ export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
   }
 
   const handleSave = () => {
-    onSave({ apiKey: apiKey.trim(), model })
+    onSave({ apiKey: apiKey.trim(), model, resume: resume.trim() })
   }
+
+  const wordCount = resume.trim().split(/\s+/).filter(Boolean).length
 
   return (
     <div className="flex items-center justify-center h-full p-8">
@@ -80,7 +81,7 @@ export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
         </div>
 
         {/* Model Selection */}
-        <div className="mb-6">
+        <div className="mb-5">
           <label className="label">Model</label>
           <select
             className="input"
@@ -96,6 +97,56 @@ export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
           <p className="text-xs text-slate-500 mt-1">
             Opus gives the best coaching quality. Haiku is fastest for real-time detection.
           </p>
+        </div>
+
+        {/* Candidate Background — collapsible */}
+        <div className="mb-6">
+          <button
+            type="button"
+            onClick={() => setResumeExpanded(!resumeExpanded)}
+            className="flex items-center justify-between w-full text-left"
+          >
+            <span className="label mb-0 cursor-pointer">
+              Candidate Background
+              <span className="text-slate-500 font-normal ml-1">(optional)</span>
+            </span>
+            <span className="text-xs text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1 flex-shrink-0">
+              {resumeExpanded ? 'Collapse' : resume.trim() ? 'Edit' : 'Add resume'}
+              <svg
+                className={`w-3.5 h-3.5 transition-transform ${resumeExpanded ? 'rotate-180' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </span>
+          </button>
+
+          {!resumeExpanded && resume.trim() && (
+            <p className="text-xs text-emerald-400 mt-1">
+              Resume saved ({wordCount} words) — included in all coaching sessions
+            </p>
+          )}
+          {!resumeExpanded && !resume.trim() && (
+            <p className="text-xs text-slate-500 mt-1">
+              Paste your resume to anchor coaching in your actual experience
+            </p>
+          )}
+
+          {resumeExpanded && (
+            <>
+              <textarea
+                className="input mt-2 h-48 resize-none font-mono text-sm leading-relaxed"
+                placeholder={`Paste your resume or a professional summary here.\n\nExample:\n• 8 years RevOps, most recently Director at Acme Corp\n• Reduced forecast error from 22% to 8% via Clari implementation\n• Built SDR ops from scratch: 0 → 40 reps, supporting $180M ARR\n• Certified Salesforce Admin; deployed HubSpot, Outreach, Gong\n\nThe more specific your metrics and company context, the better Claude can anchor suggested answers in your actual experience.`}
+                value={resume}
+                onChange={(e) => setResume(e.target.value)}
+              />
+              <p className="text-xs text-slate-500 mt-1">
+                Stored locally. Used to personalize coaching responses and generate predicted questions.
+              </p>
+            </>
+          )}
         </div>
 
         {/* Test result */}

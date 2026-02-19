@@ -3,6 +3,7 @@ export type AppScreen = 'setup' | 'interview' | 'settings'
 export interface Settings {
   apiKey: string
   model: string
+  resume: string
 }
 
 export interface JobContext {
@@ -40,6 +41,19 @@ export interface AnalyzedQuestion {
   error?: string
 }
 
+export interface PrepQuestion {
+  id: string
+  question: string
+  competency: string
+  rationale: string
+}
+
+export interface PrepQuestionsState {
+  status: 'idle' | 'loading' | 'ready' | 'error'
+  questions: PrepQuestion[]
+  error?: string
+}
+
 export interface ElectronAPI {
   getSettings: () => Promise<Settings>
   saveSettings: (settings: Settings) => Promise<boolean>
@@ -50,6 +64,7 @@ export interface ElectronAPI {
       jobDescription: string
       knowledgeContext: string
       conversationHistory: string
+      resume: string
     },
     requestId: string
   ) => void
@@ -64,6 +79,11 @@ export interface ElectronAPI {
     success: boolean
     data?: { isQuestion: boolean; question?: string; type?: string }
   }>
+  generatePrepQuestions: (payload: {
+    jobDescription: string
+    knowledgeContext: string
+    resume: string
+  }) => Promise<{ success: boolean; questions?: PrepQuestion[]; error?: string }>
 }
 
 declare global {

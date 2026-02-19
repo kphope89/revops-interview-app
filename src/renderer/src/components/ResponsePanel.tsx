@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AnalyzedQuestion, JobContext, QuestionAnalysis } from '../types'
+import { AnalyzedQuestion, JobContext, PrepQuestionsState, QuestionAnalysis } from '../types'
 
 interface Props {
   questions: AnalyzedQuestion[]
@@ -7,6 +7,8 @@ interface Props {
   onSelectQuestion: (id: string) => void
   jobContext: JobContext
   onManualQuestion: (question: string) => void
+  prepState: PrepQuestionsState
+  onPracticeQuestion: (question: string) => void
 }
 
 export default function ResponsePanel({
@@ -14,10 +16,13 @@ export default function ResponsePanel({
   selectedId,
   onSelectQuestion,
   jobContext,
-  onManualQuestion
+  onManualQuestion,
+  prepState,
+  onPracticeQuestion
 }: Props) {
   const [copied, setCopied] = useState(false)
   const [quickInput, setQuickInput] = useState('')
+  const [prepCollapsed, setPrepCollapsed] = useState(false)
 
   const selected = questions.find((q) => q.id === selectedId)
 
@@ -77,26 +82,12 @@ export default function ResponsePanel({
             </div>
           </div>
 
-          {/* Sample questions */}
-          <div className="mt-6 w-full max-w-md">
-            <p className="text-xs text-slate-500 mb-2">Common RevOps interview questions:</p>
-            <div className="grid grid-cols-1 gap-1.5">
-              {[
-                'How would you build a RevOps function from scratch?',
-                'Walk me through how you design a lead scoring model',
-                'How do you approach sales forecasting accuracy?',
-                'Tell me about a time you aligned Sales and Marketing'
-              ].map((q) => (
-                <button
-                  key={q}
-                  onClick={() => onManualQuestion(q)}
-                  className="text-left px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-400 hover:text-slate-200 transition-colors border border-slate-700"
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
-          </div>
+          <PrepQuestionsSection
+            prepState={prepState}
+            collapsed={prepCollapsed}
+            onToggleCollapse={() => setPrepCollapsed(!prepCollapsed)}
+            onPractice={onPracticeQuestion}
+          />
         </div>
       </div>
     )
@@ -107,6 +98,58 @@ export default function ResponsePanel({
       {/* Question list sidebar */}
       {questions.length > 1 && (
         <div className="w-64 border-r border-slate-700/50 flex flex-col">
+          {/* Prep questions accordion */}
+          {(prepState.status === 'loading' || prepState.status === 'ready') && (
+            <div className="border-b border-slate-700/50">
+              <button
+                onClick={() => setPrepCollapsed(!prepCollapsed)}
+                className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide hover:text-slate-300 transition-colors"
+              >
+                <span>
+                  {prepState.status === 'loading'
+                    ? 'Prep (generating…)'
+                    : `Prep (${prepState.questions.length})`}
+                </span>
+                {prepState.status === 'loading' ? (
+                  <div className="flex gap-0.5">
+                    {[0, 1, 2].map((i) => (
+                      <div
+                        key={i}
+                        className="w-1 h-1 bg-violet-400 rounded-full animate-bounce"
+                        style={{ animationDelay: `${i * 0.15}s` }}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <svg
+                    className={`w-3 h-3 transition-transform ${prepCollapsed ? '' : 'rotate-180'}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                )}
+              </button>
+              {prepState.status === 'ready' && !prepCollapsed && (
+                <div className="p-2 space-y-1">
+                  {prepState.questions.map((pq) => (
+                    <button
+                      key={pq.id}
+                      onClick={() => onPracticeQuestion(pq.question)}
+                      className="w-full text-left p-2.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-300 text-xs transition-colors"
+                    >
+                      <p className="line-clamp-2 leading-relaxed mb-1">{pq.question}</p>
+                      <span className="badge bg-violet-500/10 text-violet-300 border border-violet-500/20 text-xs">
+                        {pq.competency}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="p-3 border-b border-slate-700/50 bg-surface-1">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
               Questions ({questions.length})
@@ -355,6 +398,105 @@ function QuestionCoaching({
       </div>
 
       <div className="pb-4" />
+    </div>
+  )
+}
+
+function PrepQuestionsSection({
+  prepState,
+  collapsed,
+  onToggleCollapse,
+  onPractice
+}: {
+  prepState: PrepQuestionsState
+  collapsed: boolean
+  onToggleCollapse: () => void
+  onPractice: (question: string) => void
+}) {
+  if (prepState.status === 'idle') return null
+
+  if (prepState.status === 'loading') {
+    return (
+      <div className="w-full max-w-md mt-6">
+        <div className="flex items-center gap-2 mb-3">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="w-1.5 h-1.5 bg-violet-500 rounded-full animate-bounce"
+              style={{ animationDelay: `${i * 0.15}s` }}
+            />
+          ))}
+          <span className="text-xs text-violet-400">Predicting likely questions for this role…</span>
+        </div>
+        <div className="space-y-2">
+          {[85, 65, 78, 55, 90, 70].map((w, i) => (
+            <div
+              key={i}
+              className="h-10 bg-slate-800 rounded-lg animate-pulse"
+              style={{ width: `${w}%` }}
+            />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  if (prepState.status === 'error') {
+    return (
+      <div className="w-full max-w-md mt-6">
+        <p className="text-xs text-slate-500 mb-1">Could not generate predicted questions.</p>
+        <p className="text-xs text-red-400/70">{prepState.error}</p>
+      </div>
+    )
+  }
+
+  if (prepState.questions.length === 0) return null
+
+  return (
+    <div className="w-full max-w-md mt-6">
+      <button
+        onClick={onToggleCollapse}
+        className="flex items-center justify-between w-full mb-3"
+      >
+        <p className="text-xs font-semibold text-slate-300 uppercase tracking-wide">
+          Predicted Questions ({prepState.questions.length})
+        </p>
+        <svg
+          className={`w-3.5 h-3.5 text-slate-400 transition-transform ${collapsed ? '' : 'rotate-180'}`}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {!collapsed && (
+        <div className="space-y-2">
+          {prepState.questions.map((pq) => (
+            <div
+              key={pq.id}
+              className="p-3 rounded-lg bg-slate-800 border border-slate-700 hover:border-violet-500/30 transition-colors"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-slate-300 leading-relaxed mb-1.5">{pq.question}</p>
+                  <span className="badge bg-violet-500/10 text-violet-300 border border-violet-500/20">
+                    {pq.competency}
+                  </span>
+                </div>
+                <button
+                  onClick={() => onPractice(pq.question)}
+                  className="flex-shrink-0 btn-secondary text-xs py-1 px-2.5"
+                >
+                  Practice
+                </button>
+              </div>
+              <p className="text-xs text-slate-500 mt-2 italic leading-relaxed">{pq.rationale}</p>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
