@@ -258,7 +258,7 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
   return (
     <div className="flex h-full">
       {/* Left panel: Transcript */}
-      <div className="w-[420px] flex flex-col border-r border-slate-700/50">
+      <div className="w-[320px] flex flex-col border-r border-slate-700/50">
         {/* Session controls */}
         <div className="border-b border-slate-700/50 bg-surface-1">
           {/* Top bar: status + timer + buttons */}
