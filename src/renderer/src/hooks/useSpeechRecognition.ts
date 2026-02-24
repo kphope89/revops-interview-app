@@ -103,17 +103,31 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
 
   const start = useCallback(() => {
     if (!SpeechRecognitionAPI) return
-    recognitionRef.current?.stop()
-    const recognition = createRecognition()
-    if (!recognition) return
-    recognitionRef.current = recognition
-    isRunningRef.current = true
-    try {
-      recognition.start()
-    } catch (e) {
-      setError(String(e))
-      setStatus('error')
-    }
+
+    // Explicitly request mic access via getUserMedia first.
+    // This is what triggers the macOS permission dialog — without it the OS
+    // never shows the prompt and Web Speech API silently fails with "network".
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => {
+        // Release the stream immediately — we only needed the permission grant
+        stream.getTracks().forEach((track) => track.stop())
+
+        recognitionRef.current?.stop()
+        const recognition = createRecognition()
+        if (!recognition) return
+        recognitionRef.current = recognition
+        isRunningRef.current = true
+        try {
+          recognition.start()
+        } catch (e) {
+          setError(String(e))
+          setStatus('error')
+        }
+      })
+      .catch(() => {
+        setError('Microphone access denied. Go to System Settings → Privacy & Security → Microphone and enable access for Electron.')
+        setStatus('error')
+      })
   }, [createRecognition, SpeechRecognitionAPI])
 
   const stop = useCallback(() => {
