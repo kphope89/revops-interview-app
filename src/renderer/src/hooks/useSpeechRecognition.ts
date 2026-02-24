@@ -15,7 +15,9 @@ interface UseSpeechRecognitionReturn {
   clearTranscripts: () => void
 }
 
-const CHUNK_INTERVAL_MS = 5000 // send audio to Whisper every 5 seconds
+// Each segment is this long before being sent to Whisper.
+// Longer = more context for Whisper, but more latency.
+const SEGMENT_DURATION_MS = 7000
 
 export function useSpeechRecognition(): UseSpeechRecognitionReturn {
   const [status, setStatus] = useState<SpeechStatus>('idle')
@@ -26,31 +28,22 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
 
   const streamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
-  const chunksRef = useRef<Blob[]>([])
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const segmentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mimeTypeRef = useRef('audio/webm')
   const isActiveRef = useRef(false)
-  const isTranscribingRef = useRef(false) // prevent overlapping Whisper calls
+  const isTranscribingRef = useRef(false)
 
-  const blobToBase64 = async (blob: Blob): Promise<string> => {
-    const arrayBuffer = await blob.arrayBuffer()
-    const bytes = new Uint8Array(arrayBuffer)
-    let binary = ''
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i])
-    }
-    return btoa(binary)
-  }
+  // FileReader-based base64 — reliably handles large buffers
+  const blobToBase64 = (blob: Blob): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve((reader.result as string).split(',')[1])
+      reader.onerror = reject
+      reader.readAsDataURL(blob)
+    })
 
-  const drainAndTranscribe = useCallback(async () => {
-    if (chunksRef.current.length === 0) return
-    if (isTranscribingRef.current) return // skip — previous chunk still processing
-
-    const chunks = chunksRef.current.splice(0)
-    const blob = new Blob(chunks, { type: mimeTypeRef.current })
-
-    if (blob.size < 500) return // too small — likely silence or noise
-
+  const transcribeBlob = useCallback(async (blob: Blob) => {
+    if (isTranscribingRef.current) return
     isTranscribingRef.current = true
     setInterimTranscript('Transcribing...')
 
@@ -73,30 +66,45 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     }
   }, [])
 
-  const startInterval = useCallback(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current)
-    intervalRef.current = setInterval(() => {
-      drainAndTranscribe()
-    }, CHUNK_INTERVAL_MS)
-  }, [drainAndTranscribe])
+  // Use a ref so onstop can call the latest version without stale closure
+  const startSegmentRef = useRef<() => void>(() => {})
 
-  const createRecorder = useCallback((stream: MediaStream) => {
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : MediaRecorder.isTypeSupported('audio/webm')
-      ? 'audio/webm'
-      : 'audio/ogg'
+  startSegmentRef.current = () => {
+    if (!streamRef.current || !isActiveRef.current) return
 
-    mimeTypeRef.current = mimeType
-    chunksRef.current = []
+    const mimeType = mimeTypeRef.current
+    const chunks: Blob[] = []
+    const recorder = new MediaRecorder(streamRef.current, { mimeType })
+    recorderRef.current = recorder
 
-    const recorder = new MediaRecorder(stream, { mimeType })
     recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunksRef.current.push(e.data)
+      if (e.data.size > 0) chunks.push(e.data)
     }
-    recorder.start(500) // emit data every 500ms
-    return recorder
-  }, [])
+
+    recorder.onstop = () => {
+      // All chunks together form one complete, valid WebM file
+      const blob = new Blob(chunks, { type: mimeType })
+      if (blob.size >= 1000) {
+        transcribeBlob(blob) // fire and forget — chain continues independently
+      }
+      // Immediately start the next segment (no gap in recording)
+      if (isActiveRef.current && streamRef.current) {
+        startSegmentRef.current()
+      }
+    }
+
+    // Collect everything until stop() — no timeslice means the first
+    // ondataavailable call includes the WebM header + all data
+    recorder.start()
+
+    // Schedule stop after SEGMENT_DURATION_MS
+    if (segmentTimerRef.current) clearTimeout(segmentTimerRef.current)
+    segmentTimerRef.current = setTimeout(() => {
+      if (recorder.state === 'recording') {
+        recorder.stop()
+      }
+    }, SEGMENT_DURATION_MS)
+  }
 
   const start = useCallback(async () => {
     try {
@@ -111,8 +119,13 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
       streamRef.current = stream
       isActiveRef.current = true
 
-      recorderRef.current = createRecorder(stream)
-      startInterval()
+      mimeTypeRef.current = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/ogg'
+
+      startSegmentRef.current()
       setStatus('listening')
       setError(null)
     } catch {
@@ -121,58 +134,56 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
       )
       setStatus('error')
     }
-  }, [createRecorder, startInterval])
+  }, [])
 
   const stop = useCallback(() => {
     isActiveRef.current = false
 
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current)
-      intervalRef.current = null
+    if (segmentTimerRef.current) {
+      clearTimeout(segmentTimerRef.current)
+      segmentTimerRef.current = null
     }
 
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      recorderRef.current.onstop = null // don't chain into a new segment
       recorderRef.current.stop()
     }
     recorderRef.current = null
 
-    drainAndTranscribe()
-
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
-    chunksRef.current = []
 
     setStatus('idle')
     setInterimTranscript('')
-  }, [drainAndTranscribe])
+  }, [])
 
   const pause = useCallback(() => {
     isActiveRef.current = false
 
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current)
-      intervalRef.current = null
+    if (segmentTimerRef.current) {
+      clearTimeout(segmentTimerRef.current)
+      segmentTimerRef.current = null
     }
 
-    if (recorderRef.current?.state === 'recording') {
-      recorderRef.current.pause()
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      recorderRef.current.onstop = null // don't chain into a new segment
+      recorderRef.current.stop()
     }
+    recorderRef.current = null
 
     setStatus('paused')
     setInterimTranscript('')
   }, [])
 
   const resume = useCallback(async () => {
-    if (streamRef.current && recorderRef.current?.state === 'paused') {
-      recorderRef.current.resume()
+    if (streamRef.current) {
       isActiveRef.current = true
-      startInterval()
+      startSegmentRef.current()
       setStatus('listening')
     } else {
-      // Stream was released — start fresh
       await start()
     }
-  }, [start, startInterval])
+  }, [start])
 
   const clearTranscripts = useCallback(() => {
     setTranscript('')
@@ -180,12 +191,11 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     setFinalTranscripts([])
   }, [])
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       isActiveRef.current = false
-      if (intervalRef.current) clearInterval(intervalRef.current)
-      recorderRef.current?.stop()
+      if (segmentTimerRef.current) clearTimeout(segmentTimerRef.current)
+      if (recorderRef.current?.state !== 'inactive') recorderRef.current?.stop()
       streamRef.current?.getTracks().forEach((t) => t.stop())
     }
   }, [])
