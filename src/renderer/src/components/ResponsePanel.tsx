@@ -21,7 +21,6 @@ export default function ResponsePanel({
   onPracticeQuestion
 }: Props) {
   const [copied, setCopied] = useState(false)
-  const [quickInput, setQuickInput] = useState('')
   const [prepCollapsed, setPrepCollapsed] = useState(false)
 
   const selected = questions.find((q) => q.id === selectedId)
@@ -30,13 +29,6 @@ export default function ResponsePanel({
     navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
-  }
-
-  const handleQuickSubmit = () => {
-    if (quickInput.trim()) {
-      onManualQuestion(quickInput.trim())
-      setQuickInput('')
-    }
   }
 
   if (questions.length === 0) {
@@ -50,44 +42,28 @@ export default function ResponsePanel({
           </p>
         </div>
 
-        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-slate-800 flex items-center justify-center mb-4">
-            <svg className="w-8 h-8 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-            </svg>
-          </div>
-          <h3 className="text-base font-semibold text-slate-300 mb-2">Waiting for questions</h3>
-          <p className="text-sm text-slate-500 leading-relaxed mb-6 max-w-xs">
-            As questions are detected in the live transcript, coaching will appear here instantly.
-          </p>
-
-          {/* Quick question input */}
-          <div className="w-full max-w-md">
-            <p className="text-xs text-slate-500 mb-2">Or type a question to practice:</p>
-            <div className="flex gap-2">
-              <input
-                className="input flex-1 text-sm"
-                placeholder="e.g. How would you build a RevOps function from scratch?"
-                value={quickInput}
-                onChange={(e) => setQuickInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleQuickSubmit()}
-              />
-              <button
-                onClick={handleQuickSubmit}
-                disabled={!quickInput.trim()}
-                className="btn-primary text-sm px-4"
-              >
-                Coach Me
-              </button>
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-lg mx-auto">
+            <div className="flex flex-col items-center text-center mb-8">
+              <div className="w-14 h-14 rounded-2xl bg-slate-800 flex items-center justify-center mb-3">
+                <svg className="w-7 h-7 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                </svg>
+              </div>
+              <h3 className="text-base font-semibold text-slate-300 mb-1">Waiting for questions</h3>
+              <p className="text-sm text-slate-500 leading-relaxed">
+                Questions detected from the transcript get coached here automatically.
+                Missed one? Type it in the panel on the left.
+              </p>
             </div>
-          </div>
 
-          <PrepQuestionsSection
-            prepState={prepState}
-            collapsed={prepCollapsed}
-            onToggleCollapse={() => setPrepCollapsed(!prepCollapsed)}
-            onPractice={onPracticeQuestion}
-          />
+            <PrepQuestionsSection
+              prepState={prepState}
+              collapsed={prepCollapsed}
+              onToggleCollapse={() => setPrepCollapsed(!prepCollapsed)}
+              onPractice={onPracticeQuestion}
+            />
+          </div>
         </div>
       </div>
     )
@@ -95,8 +71,8 @@ export default function ResponsePanel({
 
   return (
     <div className="flex h-full">
-      {/* Question list sidebar */}
-      {questions.length > 1 && (
+      {/* Question list sidebar — visible as soon as any question exists */}
+      {questions.length >= 1 && (
         <div className="w-64 border-r border-slate-700/50 flex flex-col">
           {/* Prep questions accordion */}
           {(prepState.status === 'loading' || prepState.status === 'ready') && (
@@ -319,24 +295,7 @@ function QuestionCoaching({
         </div>
       </div>
 
-      {/* Key talking points */}
-      <div>
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2.5">
-          Key Points to Hit
-        </h3>
-        <ul className="space-y-2">
-          {analysis.keyPoints.map((point, i) => (
-            <li key={i} className="flex items-start gap-2.5">
-              <span className="flex-shrink-0 w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs flex items-center justify-center font-bold mt-0.5">
-                {i + 1}
-              </span>
-              <p className="text-sm text-slate-300 leading-relaxed">{point}</p>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {/* Suggested response */}
+      {/* Suggested response — first since it's the most immediately useful */}
       <div>
         <div className="flex items-center justify-between mb-2.5">
           <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
@@ -363,6 +322,23 @@ function QuestionCoaching({
             {analysis.suggestedResponse}
           </p>
         </div>
+      </div>
+
+      {/* Key talking points */}
+      <div>
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2.5">
+          Key Points to Hit
+        </h3>
+        <ul className="space-y-2">
+          {analysis.keyPoints.map((point, i) => (
+            <li key={i} className="flex items-start gap-2.5">
+              <span className="flex-shrink-0 w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-xs flex items-center justify-center font-bold mt-0.5">
+                {i + 1}
+              </span>
+              <p className="text-sm text-slate-300 leading-relaxed">{point}</p>
+            </li>
+          ))}
+        </ul>
       </div>
 
       {/* Tools + Metrics row */}

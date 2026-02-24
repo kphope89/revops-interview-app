@@ -260,11 +260,12 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
       {/* Left panel: Transcript */}
       <div className="w-[420px] flex flex-col border-r border-slate-700/50">
         {/* Session controls */}
-        <div className="p-4 border-b border-slate-700/50 bg-surface-1">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
+        <div className="border-b border-slate-700/50 bg-surface-1">
+          {/* Top bar: status + timer + buttons */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-2.5">
               <div
-                className={`w-2 h-2 rounded-full ${
+                className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
                   status === 'listening'
                     ? 'bg-emerald-400 listening-dot'
                     : status === 'paused'
@@ -272,35 +273,38 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
                     : 'bg-slate-500'
                 }`}
               />
-              <span className="text-sm font-medium text-slate-300">
-                {status === 'listening'
-                  ? interimTranscript
-                    ? 'Transcribing...'
-                    : 'Listening'
-                  : status === 'paused'
-                  ? 'Paused'
-                  : 'Stopped'}
-              </span>
-              {sessionStarted && (
-                <span className="text-xs text-slate-500 font-mono">{formatTime(elapsedSeconds)}</span>
-              )}
+              <div>
+                <p className="text-sm font-semibold text-slate-200 leading-tight">
+                  {status === 'listening'
+                    ? interimTranscript
+                      ? 'Transcribing...'
+                      : 'Listening'
+                    : status === 'paused'
+                    ? 'Paused'
+                    : 'Ready'}
+                </p>
+                {sessionStarted && (
+                  <p className="text-xs text-slate-500 font-mono leading-tight">{formatTime(elapsedSeconds)}</p>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-1.5">
+
+            <div className="flex items-center gap-2">
               {status === 'idle' || status === 'error' ? (
-                <button onClick={start} className="btn-primary text-xs py-1 px-3">
+                <button onClick={start} className="btn-success text-sm py-1.5 px-4">
                   Start Listening
                 </button>
               ) : status === 'listening' ? (
-                <button onClick={pause} className="btn-secondary text-xs py-1 px-3">
+                <button onClick={pause} className="btn-secondary text-sm py-1.5 px-4">
                   Pause
                 </button>
               ) : (
-                <button onClick={resume} className="btn-primary text-xs py-1 px-3">
+                <button onClick={resume} className="btn-success text-sm py-1.5 px-4">
                   Resume
                 </button>
               )}
               {sessionStarted && (
-                <button onClick={stop} className="btn-danger text-xs py-1 px-3">
+                <button onClick={stop} className="btn-danger text-sm py-1.5 px-4">
                   Stop
                 </button>
               )}
@@ -308,12 +312,15 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
           </div>
 
           {/* Job context pill */}
-          <div className="flex items-center gap-2 bg-slate-800 rounded-lg px-3 py-1.5">
+          <div className="flex items-center gap-2 mx-4 mb-3 bg-slate-800/60 rounded-lg px-3 py-2">
             <div className="w-1.5 h-1.5 bg-blue-400 rounded-full flex-shrink-0" />
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p className="text-xs font-medium text-slate-200 truncate">{jobContext.title}</p>
               <p className="text-xs text-slate-400 truncate">{jobContext.company}</p>
             </div>
+            {status === 'listening' && (
+              <span className="text-xs text-slate-500 flex-shrink-0">captures every 7s</span>
+            )}
           </div>
         </div>
 

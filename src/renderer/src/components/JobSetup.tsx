@@ -236,7 +236,7 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
         <div className="mt-6 p-3 bg-slate-800 rounded-lg border border-slate-700">
           <p className="text-xs font-medium text-slate-300 mb-1">Privacy Note</p>
           <p className="text-xs text-slate-500 leading-relaxed">
-            Audio is processed locally using your browser's built-in speech recognition. Only the text transcript is sent to Anthropic's API for coaching. Your API key is stored locally and never shared.
+            Audio is captured locally and transcribed via OpenAI Whisper. Only the text transcript is sent to Anthropic's API for coaching. Both API keys are stored locally on your device and never shared.
           </p>
         </div>
       </div>

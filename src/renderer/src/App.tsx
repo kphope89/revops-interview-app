@@ -8,7 +8,7 @@ import Header from './components/Header'
 export default function App() {
   const [screen, setScreen] = useState<AppScreen>('setup')
   const [jobContext, setJobContext] = useState<JobContext | null>(null)
-  const [settings, setSettings] = useState<Settings>({ apiKey: '', model: 'claude-opus-4-5' })
+  const [settings, setSettings] = useState<Settings>({ apiKey: '', model: 'claude-opus-4-5', resume: '', openaiApiKey: '' })
   const [hasApiKey, setHasApiKey] = useState(false)
 
   useEffect(() => {
