@@ -3,7 +3,10 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import Anthropic from '@anthropic-ai/sdk'
-import OpenAI, { toFile } from 'openai'
+import OpenAI from 'openai'
+import { createReadStream } from 'fs'
+import { writeFile, unlink } from 'fs/promises'
+import { tmpdir } from 'os'
 
 // Persistent settings store
 const store = new Store<{
@@ -377,23 +380,25 @@ Return ONLY a valid JSON array. No preamble, no trailing explanation, no markdow
         return { success: false, error: 'No OpenAI API key configured. Add it in Settings.' }
       }
 
+      const tmpPath = join(tmpdir(), `revops_${Date.now()}.webm`)
       try {
         const buffer = Buffer.from(payload.base64Audio, 'base64')
         if (buffer.length < 500) return { success: true, text: '' }
 
-        const openai = new OpenAI({ apiKey: openaiApiKey })
-        const ext = payload.mimeType.includes('ogg') ? 'ogg' : 'webm'
-        const file = await toFile(buffer, `audio.${ext}`, { type: payload.mimeType })
+        await writeFile(tmpPath, buffer)
 
+        const openai = new OpenAI({ apiKey: openaiApiKey })
         const transcription = await openai.audio.transcriptions.create({
           model: 'whisper-1',
-          file,
+          file: createReadStream(tmpPath),
           language: 'en'
         })
 
         return { success: true, text: transcription.text }
       } catch (err) {
         return { success: false, error: String(err) }
+      } finally {
+        await unlink(tmpPath).catch(() => {/* ignore if file wasn't created */})
       }
     }
   )

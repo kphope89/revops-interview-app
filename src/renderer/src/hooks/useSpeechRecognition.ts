@@ -30,6 +30,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const mimeTypeRef = useRef('audio/webm')
   const isActiveRef = useRef(false)
+  const isTranscribingRef = useRef(false) // prevent overlapping Whisper calls
 
   const blobToBase64 = async (blob: Blob): Promise<string> => {
     const arrayBuffer = await blob.arrayBuffer()
@@ -43,12 +44,14 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
 
   const drainAndTranscribe = useCallback(async () => {
     if (chunksRef.current.length === 0) return
+    if (isTranscribingRef.current) return // skip — previous chunk still processing
 
     const chunks = chunksRef.current.splice(0)
     const blob = new Blob(chunks, { type: mimeTypeRef.current })
 
     if (blob.size < 500) return // too small — likely silence or noise
 
+    isTranscribingRef.current = true
     setInterimTranscript('Transcribing...')
 
     try {
@@ -58,13 +61,14 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         const text = result.text.trim()
         setTranscript((prev) => (prev ? prev + ' ' + text : text))
         setFinalTranscripts((prev) => [...prev, text])
-        setError(null) // clear any previous error on success
+        setError(null)
       } else if (!result.success && result.error) {
         setError(result.error)
       }
     } catch (e) {
       setError(`Transcription error: ${String(e)}`)
     } finally {
+      isTranscribingRef.current = false
       setInterimTranscript('')
     }
   }, [])

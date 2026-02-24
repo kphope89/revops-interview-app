@@ -21,12 +21,24 @@ export default function LiveTranscript({
   isAnalyzing
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const isNearBottomRef = useRef(true)
   const [manualInput, setManualInput] = useState('')
 
-  // Auto-scroll to bottom as transcript grows
+  // Track whether user has scrolled away from the bottom
+  const handleScroll = () => {
+    if (scrollContainerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollContainerRef.current
+      isNearBottomRef.current = scrollHeight - scrollTop - clientHeight < 120
+    }
+  }
+
+  // Auto-scroll only when new entries arrive and only if already near the bottom
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [entries, interimTranscript])
+    if (isNearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [entries])
 
   const handleManualSubmit = () => {
     if (manualInput.trim()) {
@@ -41,7 +53,7 @@ export default function LiveTranscript({
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {/* Transcript area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-2">
         {entries.length === 0 && !interimTranscript && (
           <div className="flex flex-col items-center justify-center h-full text-center px-6 py-12">
             <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mb-3">

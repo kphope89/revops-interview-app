@@ -273,7 +273,13 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
                 }`}
               />
               <span className="text-sm font-medium text-slate-300">
-                {status === 'listening' ? 'Listening' : status === 'paused' ? 'Paused' : 'Stopped'}
+                {status === 'listening'
+                  ? interimTranscript
+                    ? 'Transcribing...'
+                    : 'Listening'
+                  : status === 'paused'
+                  ? 'Paused'
+                  : 'Stopped'}
               </span>
               {sessionStarted && (
                 <span className="text-xs text-slate-500 font-mono">{formatTime(elapsedSeconds)}</span>
