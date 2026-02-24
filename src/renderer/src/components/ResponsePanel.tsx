@@ -35,20 +35,11 @@ export default function ResponsePanel({
     return (
       <div className="flex flex-col h-full">
         <PanelHeader jobContext={jobContext} />
-        <div className="flex-1 overflow-y-auto p-6">
-          <div className="max-w-xl mx-auto">
-            <div className="flex flex-col items-center text-center mb-8 pt-4">
-              <div className="w-14 h-14 rounded-2xl bg-slate-800 flex items-center justify-center mb-3">
-                <svg className="w-7 h-7 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-                </svg>
-              </div>
-              <h3 className="text-base font-semibold text-slate-300 mb-1">Ready to coach</h3>
-              <p className="text-sm text-slate-500 leading-relaxed max-w-xs">
-                Questions detected in the transcript get coached here. Missed one? Type it in the left panel.
-              </p>
-            </div>
-
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className="max-w-2xl mx-auto">
+            <p className="text-xs text-slate-500 mb-5">
+              Questions detected in the transcript appear here. Missed one? Type it in the left panel.
+            </p>
             <PrepQuestionsSection
               prepState={prepState}
               onPractice={onPracticeQuestion}
@@ -176,7 +167,7 @@ function TeleprompterCoaching({
 
   if (error) {
     return (
-      <div className="p-8">
+      <div className="p-6">
         <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400">
           <p className="font-medium mb-1">Could not generate coaching</p>
           <p className="text-red-400/80 text-xs">{error}</p>
@@ -186,7 +177,7 @@ function TeleprompterCoaching({
   }
 
   return (
-    <div className="p-8 space-y-8 animate-slide-in">
+    <div className="p-6 space-y-6 animate-slide-in">
       {/* Competency + confidence */}
       <div className="flex items-center gap-2 flex-wrap">
         {analysis ? (
@@ -316,7 +307,7 @@ function PrepQuestionsSection({
   if (prepState.status === 'loading') {
     return (
       <div>
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-4">
           {[0, 1, 2].map((i) => (
             <div key={i} className="w-1.5 h-1.5 bg-violet-500 rounded-full animate-bounce" style={{ animationDelay: `${i * 0.15}s` }} />
           ))}
@@ -324,7 +315,7 @@ function PrepQuestionsSection({
         </div>
         <div className="space-y-2">
           {[85, 65, 78, 55, 90, 70].map((w, i) => (
-            <div key={i} className="h-12 bg-slate-800 rounded-xl animate-pulse" style={{ width: `${w}%` }} />
+            <div key={i} className="h-8 bg-slate-800 rounded-lg animate-pulse" style={{ width: `${w}%` }} />
           ))}
         </div>
       </div>
