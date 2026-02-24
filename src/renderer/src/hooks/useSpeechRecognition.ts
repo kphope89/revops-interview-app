@@ -47,9 +47,9 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     const chunks = chunksRef.current.splice(0)
     const blob = new Blob(chunks, { type: mimeTypeRef.current })
 
-    if (blob.size < 1000) return // too small — likely silence or noise
+    if (blob.size < 500) return // too small — likely silence or noise
 
-    setInterimTranscript('▋')
+    setInterimTranscript('Transcribing...')
 
     try {
       const base64 = await blobToBase64(blob)
@@ -58,13 +58,12 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         const text = result.text.trim()
         setTranscript((prev) => (prev ? prev + ' ' + text : text))
         setFinalTranscripts((prev) => [...prev, text])
+        setError(null) // clear any previous error on success
       } else if (!result.success && result.error) {
-        if (result.error.includes('API key') || result.error.includes('401') || result.error.includes('OpenAI')) {
-          setError(result.error)
-        }
+        setError(result.error)
       }
-    } catch {
-      // Silent fail — individual chunk failures should not stop the session
+    } catch (e) {
+      setError(`Transcription error: ${String(e)}`)
     } finally {
       setInterimTranscript('')
     }
