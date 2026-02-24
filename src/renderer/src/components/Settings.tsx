@@ -15,6 +15,7 @@ const MODELS = [
 
 export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
   const [apiKey, setApiKey] = useState(settings.apiKey)
+  const [openaiApiKey, setOpenaiApiKey] = useState(settings.openaiApiKey ?? '')
   const [model, setModel] = useState(settings.model)
   const [resume, setResume] = useState(settings.resume ?? '')
   const [resumeExpanded, setResumeExpanded] = useState(false)
@@ -27,7 +28,7 @@ export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
     setTesting(true)
     setTestResult(null)
     try {
-      await window.electronAPI.saveSettings({ apiKey: apiKey.trim(), model, resume: resume.trim() })
+      await window.electronAPI.saveSettings({ apiKey: apiKey.trim(), model, resume: resume.trim(), openaiApiKey: openaiApiKey.trim() })
       const res = await window.electronAPI.detectQuestion({
         transcript: 'How do you approach RevOps?',
         previousTranscript: ''
@@ -44,7 +45,7 @@ export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
   }
 
   const handleSave = () => {
-    onSave({ apiKey: apiKey.trim(), model, resume: resume.trim() })
+    onSave({ apiKey: apiKey.trim(), model, resume: resume.trim(), openaiApiKey: openaiApiKey.trim() })
   }
 
   const wordCount = resume.trim().split(/\s+/).filter(Boolean).length
@@ -77,6 +78,31 @@ export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
           <p className="text-xs text-slate-500 mt-1">
             Get your API key at{' '}
             <span className="text-blue-400">console.anthropic.com</span>. Stored locally on your device.
+          </p>
+        </div>
+
+        {/* OpenAI API Key */}
+        <div className="mb-5">
+          <label className="label">OpenAI API Key <span className="text-slate-500 font-normal">(for speech recognition)</span></label>
+          <div className="relative">
+            <input
+              type={showKey ? 'text' : 'password'}
+              className="input pr-20"
+              value={openaiApiKey}
+              onChange={(e) => setOpenaiApiKey(e.target.value)}
+              placeholder="sk-proj-..."
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey(!showKey)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-200"
+            >
+              {showKey ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          <p className="text-xs text-slate-500 mt-1">
+            Used for Whisper speech-to-text transcription. Get your key at{' '}
+            <span className="text-blue-400">platform.openai.com</span>. Stored locally.
           </p>
         </div>
 

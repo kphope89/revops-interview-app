@@ -4,6 +4,7 @@ export interface Settings {
   apiKey: string
   model: string
   resume: string
+  openaiApiKey: string
 }
 
 export interface JobContext {
@@ -84,6 +85,10 @@ export interface ElectronAPI {
     knowledgeContext: string
     resume: string
   }) => Promise<{ success: boolean; questions?: PrepQuestion[]; error?: string }>
+  transcribeAudio: (
+    base64Audio: string,
+    mimeType: string
+  ) => Promise<{ success: boolean; text?: string; error?: string }>
 }
 
 declare global {

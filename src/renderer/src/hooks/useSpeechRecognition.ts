@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 
 export type SpeechStatus = 'idle' | 'listening' | 'paused' | 'error' | 'unsupported'
 
@@ -15,154 +15,176 @@ interface UseSpeechRecognitionReturn {
   clearTranscripts: () => void
 }
 
+const CHUNK_INTERVAL_MS = 5000 // send audio to Whisper every 5 seconds
+
 export function useSpeechRecognition(): UseSpeechRecognitionReturn {
   const [status, setStatus] = useState<SpeechStatus>('idle')
   const [transcript, setTranscript] = useState('')
   const [interimTranscript, setInterimTranscript] = useState('')
   const [finalTranscripts, setFinalTranscripts] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
-  const isRunningRef = useRef(false)
 
-  // Check support
-  const SpeechRecognitionAPI =
-    (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+  const streamRef = useRef<MediaStream | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const mimeTypeRef = useRef('audio/webm')
+  const isActiveRef = useRef(false)
 
-  useEffect(() => {
-    if (!SpeechRecognitionAPI) {
-      setStatus('unsupported')
-      setError('Speech recognition is not supported in this environment.')
+  const blobToBase64 = async (blob: Blob): Promise<string> => {
+    const arrayBuffer = await blob.arrayBuffer()
+    const bytes = new Uint8Array(arrayBuffer)
+    let binary = ''
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i])
     }
-    return () => {
-      recognitionRef.current?.stop()
+    return btoa(binary)
+  }
+
+  const drainAndTranscribe = useCallback(async () => {
+    if (chunksRef.current.length === 0) return
+
+    const chunks = chunksRef.current.splice(0)
+    const blob = new Blob(chunks, { type: mimeTypeRef.current })
+
+    if (blob.size < 1000) return // too small — likely silence or noise
+
+    setInterimTranscript('▋')
+
+    try {
+      const base64 = await blobToBase64(blob)
+      const result = await window.electronAPI.transcribeAudio(base64, 'audio/webm')
+      if (result.success && result.text?.trim()) {
+        const text = result.text.trim()
+        setTranscript((prev) => (prev ? prev + ' ' + text : text))
+        setFinalTranscripts((prev) => [...prev, text])
+      } else if (!result.success && result.error) {
+        if (result.error.includes('API key') || result.error.includes('401') || result.error.includes('OpenAI')) {
+          setError(result.error)
+        }
+      }
+    } catch {
+      // Silent fail — individual chunk failures should not stop the session
+    } finally {
+      setInterimTranscript('')
     }
   }, [])
 
-  const createRecognition = useCallback(() => {
-    if (!SpeechRecognitionAPI) return null
+  const startInterval = useCallback(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current)
+    intervalRef.current = setInterval(() => {
+      drainAndTranscribe()
+    }, CHUNK_INTERVAL_MS)
+  }, [drainAndTranscribe])
 
-    const recognition = new SpeechRecognitionAPI()
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.lang = 'en-US'
-    recognition.maxAlternatives = 1
+  const createRecorder = useCallback((stream: MediaStream) => {
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm')
+      ? 'audio/webm'
+      : 'audio/ogg'
 
-    recognition.onstart = () => {
-      isRunningRef.current = true
+    mimeTypeRef.current = mimeType
+    chunksRef.current = []
+
+    const recorder = new MediaRecorder(stream, { mimeType })
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data)
+    }
+    recorder.start(500) // emit data every 500ms
+    return recorder
+  }, [])
+
+  const start = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      })
+      streamRef.current = stream
+      isActiveRef.current = true
+
+      recorderRef.current = createRecorder(stream)
+      startInterval()
       setStatus('listening')
       setError(null)
+    } catch {
+      setError(
+        'Microphone access denied. Go to System Settings → Privacy & Security → Microphone and enable access for Electron.'
+      )
+      setStatus('error')
     }
-
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let interim = ''
-      let newFinal = ''
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i]
-        if (result.isFinal) {
-          newFinal += result[0].transcript + ' '
-        } else {
-          interim += result[0].transcript
-        }
-      }
-
-      if (newFinal) {
-        const trimmed = newFinal.trim()
-        setTranscript((prev) => (prev ? prev + ' ' + trimmed : trimmed))
-        setFinalTranscripts((prev) => [...prev, trimmed])
-      }
-      setInterimTranscript(interim)
-    }
-
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      const msg = event.error === 'no-speech'
-        ? 'No speech detected. Continuing to listen...'
-        : `Speech recognition error: ${event.error}`
-      if (event.error !== 'no-speech') {
-        setError(msg)
-        setStatus('error')
-      }
-    }
-
-    recognition.onend = () => {
-      setInterimTranscript('')
-      // Auto-restart if we're supposed to still be listening
-      if (isRunningRef.current) {
-        try {
-          recognition.start()
-        } catch {
-          // already started
-        }
-      } else {
-        setStatus('idle')
-      }
-    }
-
-    return recognition
-  }, [SpeechRecognitionAPI])
-
-  const start = useCallback(() => {
-    if (!SpeechRecognitionAPI) return
-
-    // Explicitly request mic access via getUserMedia first.
-    // This is what triggers the macOS permission dialog — without it the OS
-    // never shows the prompt and Web Speech API silently fails with "network".
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then((stream) => {
-        // Release the stream immediately — we only needed the permission grant
-        stream.getTracks().forEach((track) => track.stop())
-
-        recognitionRef.current?.stop()
-        const recognition = createRecognition()
-        if (!recognition) return
-        recognitionRef.current = recognition
-        isRunningRef.current = true
-        try {
-          recognition.start()
-        } catch (e) {
-          setError(String(e))
-          setStatus('error')
-        }
-      })
-      .catch(() => {
-        setError('Microphone access denied. Go to System Settings → Privacy & Security → Microphone and enable access for Electron.')
-        setStatus('error')
-      })
-  }, [createRecognition, SpeechRecognitionAPI])
+  }, [createRecorder, startInterval])
 
   const stop = useCallback(() => {
-    isRunningRef.current = false
-    recognitionRef.current?.stop()
-    recognitionRef.current = null
+    isActiveRef.current = false
+
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current)
+      intervalRef.current = null
+    }
+
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      recorderRef.current.stop()
+    }
+    recorderRef.current = null
+
+    drainAndTranscribe()
+
+    streamRef.current?.getTracks().forEach((t) => t.stop())
+    streamRef.current = null
+    chunksRef.current = []
+
     setStatus('idle')
     setInterimTranscript('')
-  }, [])
+  }, [drainAndTranscribe])
 
   const pause = useCallback(() => {
-    isRunningRef.current = false
-    recognitionRef.current?.stop()
+    isActiveRef.current = false
+
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current)
+      intervalRef.current = null
+    }
+
+    if (recorderRef.current?.state === 'recording') {
+      recorderRef.current.pause()
+    }
+
     setStatus('paused')
     setInterimTranscript('')
   }, [])
 
-  const resume = useCallback(() => {
-    if (!SpeechRecognitionAPI) return
-    const recognition = createRecognition()
-    if (!recognition) return
-    recognitionRef.current = recognition
-    isRunningRef.current = true
-    try {
-      recognition.start()
-    } catch (e) {
-      setError(String(e))
-      setStatus('error')
+  const resume = useCallback(async () => {
+    if (streamRef.current && recorderRef.current?.state === 'paused') {
+      recorderRef.current.resume()
+      isActiveRef.current = true
+      startInterval()
+      setStatus('listening')
+    } else {
+      // Stream was released — start fresh
+      await start()
     }
-  }, [createRecognition, SpeechRecognitionAPI])
+  }, [start, startInterval])
 
   const clearTranscripts = useCallback(() => {
     setTranscript('')
     setInterimTranscript('')
     setFinalTranscripts([])
+  }, [])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      isActiveRef.current = false
+      if (intervalRef.current) clearInterval(intervalRef.current)
+      recorderRef.current?.stop()
+      streamRef.current?.getTracks().forEach((t) => t.stop())
+    }
   }, [])
 
   return {

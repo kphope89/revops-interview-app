@@ -3,12 +3,14 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import Anthropic from '@anthropic-ai/sdk'
+import OpenAI, { toFile } from 'openai'
 
 // Persistent settings store
 const store = new Store<{
   apiKey: string
   model: string
   resume: string
+  openaiApiKey: string
 }>()
 
 function createWindow(): void {
@@ -67,14 +69,16 @@ app.whenReady().then(() => {
     return {
       apiKey: store.get('apiKey', ''),
       model: store.get('model', 'claude-opus-4-5'),
-      resume: store.get('resume', '')
+      resume: store.get('resume', ''),
+      openaiApiKey: store.get('openaiApiKey', '')
     }
   })
 
-  ipcMain.handle('settings:save', (_event, settings: { apiKey: string; model: string; resume: string }) => {
+  ipcMain.handle('settings:save', (_event, settings: { apiKey: string; model: string; resume: string; openaiApiKey: string }) => {
     store.set('apiKey', settings.apiKey)
     store.set('model', settings.model)
     store.set('resume', settings.resume ?? '')
+    store.set('openaiApiKey', settings.openaiApiKey ?? '')
     return true
   })
 
@@ -358,6 +362,36 @@ Return ONLY a valid JSON array. No preamble, no trailing explanation, no markdow
         }>
 
         return { success: true, questions: rawQuestions }
+      } catch (err) {
+        return { success: false, error: String(err) }
+      }
+    }
+  )
+
+  // ── IPC: Transcribe audio via OpenAI Whisper ──────────────────────────────
+  ipcMain.handle(
+    'stt:transcribe',
+    async (_event, payload: { base64Audio: string; mimeType: string }) => {
+      const openaiApiKey = store.get('openaiApiKey', '')
+      if (!openaiApiKey) {
+        return { success: false, error: 'No OpenAI API key configured. Add it in Settings.' }
+      }
+
+      try {
+        const buffer = Buffer.from(payload.base64Audio, 'base64')
+        if (buffer.length < 500) return { success: true, text: '' }
+
+        const openai = new OpenAI({ apiKey: openaiApiKey })
+        const ext = payload.mimeType.includes('ogg') ? 'ogg' : 'webm'
+        const file = await toFile(buffer, `audio.${ext}`, { type: payload.mimeType })
+
+        const transcription = await openai.audio.transcriptions.create({
+          model: 'whisper-1',
+          file,
+          language: 'en'
+        })
+
+        return { success: true, text: transcription.text }
       } catch (err) {
         return { success: false, error: String(err) }
       }

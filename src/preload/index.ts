@@ -4,7 +4,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('electronAPI', {
   // Settings
   getSettings: () => ipcRenderer.invoke('settings:get'),
-  saveSettings: (settings: { apiKey: string; model: string; resume: string }) =>
+  saveSettings: (settings: { apiKey: string; model: string; resume: string; openaiApiKey: string }) =>
     ipcRenderer.invoke('settings:save', settings),
 
   // Job posting
@@ -41,5 +41,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('claude:detect-question', payload),
 
   generatePrepQuestions: (payload: { jobDescription: string; knowledgeContext: string; resume: string }) =>
-    ipcRenderer.invoke('claude:prep-questions', payload)
+    ipcRenderer.invoke('claude:prep-questions', payload),
+
+  transcribeAudio: (base64Audio: string, mimeType: string) =>
+    ipcRenderer.invoke('stt:transcribe', { base64Audio, mimeType })
 })
