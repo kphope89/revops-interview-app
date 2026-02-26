@@ -11,11 +11,10 @@ interface Props {
   onEnd: () => void
 }
 
-const QUESTION_CHECK_DEBOUNCE = 3000
-const MIN_TRANSCRIPT_WORDS = 6
+const MIN_WORDS_TO_ANALYZE = 4
 
 export default function InterviewScreen({ jobContext, settings }: Props) {
-  const { status, interimTranscript, finalTranscripts, error, start, stop, pause, resume, clearTranscripts } =
+  const { status, finalTranscripts, error, arm, startHold, stopHold, disarm, clearTranscripts } =
     useSpeechRecognition()
 
   const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([])
@@ -27,21 +26,19 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
   const [prepState, setPrepState] = useState<PrepQuestionsState>({ status: 'idle', questions: [] })
   const [teleprompterOpen, setTeleprompterOpen] = useState(false)
 
-  const lastCheckedTranscriptRef = useRef('')
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const previousTranscriptRef = useRef('')
   const processedFinalCountRef = useRef(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const transcriptEntriesRef = useRef<TranscriptEntry[]>([])
   const settingsRef = useRef(settings)
   useEffect(() => { settingsRef.current = settings }, [settings])
 
-  // Timer
+  // Timer — runs while session is active (not idle/error)
   useEffect(() => {
-    if (status === 'listening' && !timerRef.current) {
+    const isActive = status !== 'idle' && status !== 'error'
+    if (isActive && !timerRef.current) {
       if (!sessionStarted) setSessionStarted(true)
       timerRef.current = setInterval(() => setElapsedSeconds((s) => s + 1), 1000)
-    } else if (status !== 'listening' && timerRef.current) {
+    } else if (!isActive && timerRef.current) {
       clearInterval(timerRef.current)
       timerRef.current = null
     }
@@ -79,7 +76,7 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
     run()
   }, [])
 
-  // Process new final transcript segments
+  // Each new transcription from a hold → add to transcript + immediately analyze
   useEffect(() => {
     const newSegments = finalTranscripts.slice(processedFinalCountRef.current)
     if (newSegments.length === 0) return
@@ -89,55 +86,39 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
       id: crypto.randomUUID(),
       text,
       timestamp: new Date(),
-      isQuestion: false
+      isQuestion: true
     }))
 
     setTranscriptEntries((prev) => [...prev, ...newEntries])
 
-    const combinedNew = newSegments.join(' ')
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
-    debounceTimerRef.current = setTimeout(() => {
-      const words = combinedNew.trim().split(/\s+/).filter(Boolean)
-      if (words.length >= MIN_TRANSCRIPT_WORDS) {
-        checkForQuestion(combinedNew)
+    // Analyze every capture — the user pressed hold deliberately
+    newSegments.forEach((text) => {
+      if (text.trim().split(/\s+/).filter(Boolean).length >= MIN_WORDS_TO_ANALYZE) {
+        analyzeQuestion(text.trim())
       }
-    }, QUESTION_CHECK_DEBOUNCE)
+    })
   }, [finalTranscripts])
 
-  const checkForQuestion = useCallback(
-    async (newText: string) => {
-      if (newText === lastCheckedTranscriptRef.current) return
-      lastCheckedTranscriptRef.current = newText
-
-      try {
-        const result = await window.electronAPI.detectQuestion({
-          transcript: newText,
-          previousTranscript: previousTranscriptRef.current.slice(-200)
-        })
-
-        previousTranscriptRef.current = newText
-
-        if (result.success && result.data?.isQuestion && result.data.question) {
-          const question = result.data.question
-          const type = result.data.type as TranscriptEntry['questionType']
-          const questionId = crypto.randomUUID()
-
-          setTranscriptEntries((prev) =>
-            prev.map((entry) =>
-              entry.text.toLowerCase().includes(question.toLowerCase().slice(0, 30))
-                ? { ...entry, isQuestion: true, questionType: type, relatedQuestionId: questionId }
-                : entry
-            )
-          )
-
-          analyzeQuestion(question, questionId)
-        }
-      } catch {
-        // Silent fail
-      }
-    },
-    []
-  )
+  // Spacebar = hold while session is armed/recording
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.repeat) return
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+      e.preventDefault()
+      startHold()
+    }
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return
+      stopHold()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+    }
+  }, [startHold, stopHold])
 
   const analyzeQuestion = useCallback((question: string, id?: string) => {
     const questionId = id ?? crypto.randomUUID()
@@ -234,8 +215,6 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
     setTranscriptEntries([])
     setAnalyzedQuestions([])
     setSelectedQuestionId(null)
-    lastCheckedTranscriptRef.current = ''
-    previousTranscriptRef.current = ''
     processedFinalCountRef.current = 0
     setElapsedSeconds(0)
     setSessionStarted(false)
@@ -249,6 +228,42 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
 
   const selectedQuestion = analyzedQuestions.find((q) => q.id === selectedQuestionId) || null
 
+  // Sync teleprompter window open/close state
+  useEffect(() => {
+    if (teleprompterOpen) {
+      window.electronAPI.openTeleprompter(selectedQuestion)
+    } else {
+      window.electronAPI.closeTeleprompter()
+    }
+  }, [teleprompterOpen])
+
+  // Update teleprompter when selected question changes
+  useEffect(() => {
+    if (teleprompterOpen && selectedQuestion) {
+      window.electronAPI.updateTeleprompter(selectedQuestion)
+    }
+  }, [selectedQuestion?.id])
+
+  // Derived status labels
+  const statusLabel =
+    status === 'recording' ? 'Recording…' :
+    status === 'transcribing' ? 'Transcribing…' :
+    status === 'armed' ? (isAnalyzing ? 'Analyzing…' : 'Ready — hold to capture') :
+    status === 'error' ? 'Error' :
+    'Ready'
+
+  const statusColor =
+    status === 'recording' ? 'text-red-300' :
+    status === 'transcribing' ? 'text-amber-300' :
+    status === 'armed' ? 'text-emerald-300' :
+    'text-slate-400'
+
+  const dotColor =
+    status === 'recording' ? 'bg-red-400' :
+    status === 'transcribing' ? 'bg-amber-400' :
+    status === 'armed' ? 'bg-emerald-400' :
+    'bg-slate-600'
+
   return (
     <div className="flex h-full">
       {/* ── Left panel: Transcript ── */}
@@ -260,30 +275,18 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
             <div className="flex items-center gap-2.5">
               {/* Status dot */}
               <div className="relative flex-shrink-0">
-                <div
-                  className={`w-2.5 h-2.5 rounded-full ${
-                    status === 'listening'
-                      ? 'bg-emerald-400 listening-dot'
-                      : status === 'paused'
-                      ? 'bg-amber-400'
-                      : 'bg-slate-600'
-                  }`}
-                />
-                {status === 'listening' && (
+                <div className={`w-2.5 h-2.5 rounded-full ${dotColor} ${status === 'armed' ? 'listening-dot' : ''}`} />
+                {status === 'armed' && (
                   <div className="absolute inset-0 rounded-full bg-emerald-400/30 glow-pulse" />
+                )}
+                {status === 'recording' && (
+                  <div className="absolute inset-0 rounded-full bg-red-400/30 glow-pulse" />
                 )}
               </div>
 
               <div>
-                <p className={`text-sm font-semibold leading-tight ${
-                  status === 'listening' ? 'text-emerald-300'
-                  : status === 'paused' ? 'text-amber-300'
-                  : 'text-slate-400'
-                }`}>
-                  {status === 'listening'
-                    ? interimTranscript ? 'Transcribing…' : 'Listening'
-                    : status === 'paused' ? 'Paused'
-                    : 'Ready'}
+                <p className={`text-sm font-semibold leading-tight ${statusColor}`}>
+                  {statusLabel}
                 </p>
                 {sessionStarted && (
                   <p className="text-[11px] text-slate-600 font-mono leading-tight">{formatTime(elapsedSeconds)}</p>
@@ -291,11 +294,11 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
               </div>
             </div>
 
-            {/* Control buttons with icons */}
+            {/* Control buttons */}
             <div className="flex items-center gap-1.5">
               {(status === 'idle' || status === 'error') && (
                 <button
-                  onClick={start}
+                  onClick={arm}
                   className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-1.5 rounded-xl transition-all duration-150 shadow-sm hover:shadow-emerald-500/20 hover:shadow-md"
                 >
                   <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
@@ -304,33 +307,11 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
                   Start
                 </button>
               )}
-              {status === 'listening' && (
+              {sessionStarted && status !== 'idle' && (
                 <button
-                  onClick={pause}
-                  className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium px-3 py-1.5 rounded-xl border border-slate-700/60 transition-all duration-150"
-                >
-                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                  </svg>
-                  Pause
-                </button>
-              )}
-              {status === 'paused' && (
-                <button
-                  onClick={resume}
-                  className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-1.5 rounded-xl transition-all duration-150"
-                >
-                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M8 5v14l11-7z"/>
-                  </svg>
-                  Resume
-                </button>
-              )}
-              {sessionStarted && (
-                <button
-                  onClick={stop}
+                  onClick={disarm}
                   className="flex items-center justify-center w-7 h-7 bg-slate-800 hover:bg-red-500/20 text-slate-500 hover:text-red-400 rounded-xl border border-slate-700/60 hover:border-red-500/30 transition-all duration-150"
-                  title="Stop session"
+                  title="End session"
                 >
                   <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M6 6h12v12H6z"/>
@@ -339,6 +320,25 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
               )}
             </div>
           </div>
+
+          {/* Hold button — shown when session is active */}
+          {(status === 'armed' || status === 'recording' || status === 'transcribing') && (
+            <button
+              onMouseDown={startHold}
+              onMouseUp={stopHold}
+              onMouseLeave={() => { if (status === 'recording') stopHold() }}
+              disabled={status === 'transcribing'}
+              className={`w-full py-2.5 rounded-xl text-sm font-semibold transition-all duration-100 select-none ${
+                status === 'recording'
+                  ? 'bg-red-500 text-white shadow-lg shadow-red-500/30 scale-[0.98]'
+                  : status === 'transcribing'
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 cursor-wait'
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/60 hover:border-slate-600 active:scale-[0.98]'
+              }`}
+            >
+              {status === 'recording' ? '● Recording…' : status === 'transcribing' ? 'Transcribing…' : 'Hold to Capture  ·  Space'}
+            </button>
+          )}
 
           {/* Job context pill */}
           <div className="flex items-center gap-2 bg-slate-900/60 rounded-xl px-3 py-2 border border-slate-800/60">
@@ -366,8 +366,7 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
 
         <LiveTranscript
           entries={transcriptEntries}
-          interimTranscript={interimTranscript}
-          isListening={status === 'listening'}
+          isActive={status !== 'idle' && status !== 'error'}
           onQuestionClick={setSelectedQuestionId}
           onManualQuestion={handleManualQuestion}
           onClear={handleClearSession}

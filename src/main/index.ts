@@ -16,6 +16,41 @@ const store = new Store<{
   openaiApiKey: string
 }>()
 
+let teleprompterWindow: BrowserWindow | null = null
+
+function createTeleprompterWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 440,
+    height: 320,
+    minWidth: 300,
+    minHeight: 180,
+    frame: false,
+    transparent: true,
+    hasShadow: true,
+    resizable: true,
+    movable: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  win.setAlwaysOnTop(true, 'floating')
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/teleprompter.html`)
+  } else {
+    win.loadFile(join(__dirname, '../renderer/teleprompter.html'))
+  }
+
+  win.on('closed', () => { teleprompterWindow = null })
+  return win
+}
+
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1400,
@@ -71,7 +106,7 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:get', () => {
     return {
       apiKey: store.get('apiKey', ''),
-      model: store.get('model', 'claude-opus-4-5'),
+      model: store.get('model', 'claude-sonnet-4-6'),
       resume: store.get('resume', ''),
       openaiApiKey: store.get('openaiApiKey', '')
     }
@@ -83,6 +118,34 @@ app.whenReady().then(() => {
     store.set('resume', settings.resume ?? '')
     store.set('openaiApiKey', settings.openaiApiKey ?? '')
     return true
+  })
+
+  // ── IPC: Teleprompter window ────────────────────────────────────────────────
+  ipcMain.on('teleprompter:open', (_event, questionData) => {
+    if (!teleprompterWindow || teleprompterWindow.isDestroyed()) {
+      teleprompterWindow = createTeleprompterWindow()
+    }
+    teleprompterWindow.show()
+    const sendQuestion = () => {
+      if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+        teleprompterWindow.webContents.send('teleprompter:question', questionData)
+      }
+    }
+    if (teleprompterWindow.webContents.isLoading()) {
+      teleprompterWindow.webContents.once('did-finish-load', sendQuestion)
+    } else {
+      sendQuestion()
+    }
+  })
+
+  ipcMain.on('teleprompter:close', () => {
+    teleprompterWindow?.hide()
+  })
+
+  ipcMain.on('teleprompter:update', (_event, questionData) => {
+    if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+      teleprompterWindow.webContents.send('teleprompter:question', questionData)
+    }
   })
 
   // ── IPC: Fetch job posting URL ─────────────────────────────────────────────
@@ -125,7 +188,7 @@ app.whenReady().then(() => {
       }
     ) => {
       const apiKey = store.get('apiKey', '')
-      const model = store.get('model', 'claude-opus-4-5')
+      const model = store.get('model', 'claude-sonnet-4-6')
 
       if (!apiKey) {
         if (!event.sender.isDestroyed()) {
@@ -138,20 +201,20 @@ app.whenReady().then(() => {
       }
 
       try {
-        const client = new Anthropic({ apiKey })
+        const client = new Anthropic({
+          apiKey,
+          defaultHeaders: { 'anthropic-beta': 'prompt-caching-2024-07-31' }
+        })
 
         const candidateSection = payload.resume?.trim()
           ? `\n## Candidate Background\n${payload.resume.trim()}\n\nWhen writing suggestedResponse: where naturally relevant, draw on 1-2 specific details from the candidate's background — actual companies, measurable outcomes, named tools. If the candidate's background doesn't offer a relevant anchor for this question, frame the response in first person without fabricating specifics.\n`
           : ''
 
-        const systemPrompt = `You are an expert RevOps interview coach preparing a candidate for a Senior Director / VP Revenue Operations role at a late-stage startup.
+        const staticPart = `You are an expert RevOps interview coach preparing a candidate for a Senior Director / VP Revenue Operations role at a late-stage startup.
 
 ## RevOps Knowledge Base
 ${payload.knowledgeContext}
 
-## Target Job Description
-${payload.jobDescription || 'No specific job description provided. Give general RevOps best-practice answers.'}
-${candidateSection}
 ## Competency Classification
 Classify the question into EXACTLY ONE of these 14 competencies — use the exact label string:
 - Revenue Strategy & GTM Planning
@@ -203,10 +266,17 @@ Format your response as JSON:
   "confidence": "high|medium|low - how well this question maps to RevOps"
 }`
 
+        const dynamicPart = `## Target Job Description
+${payload.jobDescription || 'No specific job description provided. Give general RevOps best-practice answers.'}
+${candidateSection}`
+
         const stream = client.messages.stream({
           model,
           max_tokens: 1500,
-          system: systemPrompt,
+          system: [
+            { type: 'text', text: staticPart, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: dynamicPart }
+          ],
           messages: [
             {
               role: 'user',
@@ -221,6 +291,9 @@ Format your response as JSON:
           if (!event.sender.isDestroyed()) {
             event.sender.send('claude:stream-chunk', { requestId: payload.requestId, delta })
           }
+          if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+            teleprompterWindow.webContents.send('teleprompter:chunk', { requestId: payload.requestId, delta })
+          }
         })
 
         await stream.done()
@@ -228,9 +301,15 @@ Format your response as JSON:
         if (!event.sender.isDestroyed()) {
           event.sender.send('claude:stream-done', { requestId: payload.requestId, fullText })
         }
+        if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+          teleprompterWindow.webContents.send('teleprompter:done', { requestId: payload.requestId, fullText })
+        }
       } catch (err) {
         if (!event.sender.isDestroyed()) {
           event.sender.send('claude:stream-error', { requestId: payload.requestId, error: String(err) })
+        }
+        if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+          teleprompterWindow.webContents.send('teleprompter:error', { requestId: payload.requestId, error: String(err) })
         }
       }
     }
@@ -244,7 +323,7 @@ Format your response as JSON:
       payload: { transcript: string; previousTranscript: string }
     ) => {
       const apiKey = store.get('apiKey', '')
-      const model = store.get('model', 'claude-opus-4-5')
+      const model = 'claude-haiku-4-5-20251001'
 
       if (!apiKey) return { success: true, data: { isQuestion: false } }
 
@@ -282,8 +361,8 @@ Return JSON only: {"isQuestion": boolean, "question": "the interview question be
         if (!jsonMatch) return { success: true, data: { isQuestion: false } }
 
         return { success: true, data: JSON.parse(jsonMatch[0]) }
-      } catch {
-        return { success: true, data: { isQuestion: false } }
+      } catch (err) {
+        return { success: false, error: String(err), data: { isQuestion: false } }
       }
     }
   )
@@ -296,7 +375,7 @@ Return JSON only: {"isQuestion": boolean, "question": "the interview question be
       payload: { jobDescription: string; knowledgeContext: string; resume: string }
     ) => {
       const apiKey = store.get('apiKey', '')
-      const model = store.get('model', 'claude-opus-4-5')
+      const model = store.get('model', 'claude-sonnet-4-6')
 
       if (!apiKey) return { success: false, error: 'No API key configured.' }
 
@@ -394,7 +473,21 @@ Return ONLY a valid JSON array. No preamble, no trailing explanation, no markdow
           language: 'en'
         })
 
-        return { success: true, text: transcription.text }
+        const text = transcription.text.trim()
+
+        // Whisper hallucinates these phrases for silence/noise — discard them
+        const WHISPER_HALLUCINATIONS = new Set([
+          'thank you.', 'thanks.', 'bye.', 'bye-bye.', 'bye!', 'bye bye.',
+          'thanks!', 'thank you!', 'you.', 'see you.', 'see you!',
+          'please subscribe.', 'subtitles by the amara.org community',
+        ])
+        const normalized = text.toLowerCase()
+        // Reject pure punctuation/whitespace or known hallucination phrases
+        if (/^[.\s!?,…\-]+$/.test(text) || WHISPER_HALLUCINATIONS.has(normalized)) {
+          return { success: true, text: '' }
+        }
+
+        return { success: true, text }
       } catch (err) {
         return { success: false, error: String(err) }
       } finally {

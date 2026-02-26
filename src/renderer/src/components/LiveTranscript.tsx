@@ -3,8 +3,7 @@ import { TranscriptEntry } from '../types'
 
 interface Props {
   entries: TranscriptEntry[]
-  interimTranscript: string
-  isListening: boolean
+  isActive: boolean
   onQuestionClick: (id: string) => void
   onManualQuestion: (question: string) => void
   onClear: () => void
@@ -13,7 +12,7 @@ interface Props {
 
 export default function LiveTranscript({
   entries,
-  isListening,
+  isActive,
   onQuestionClick,
   onManualQuestion,
   onClear,
@@ -54,12 +53,12 @@ export default function LiveTranscript({
         {entries.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center px-6 py-12">
             <div
-              className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-4 ${
-                isListening ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-slate-800'
+              className={`w-10 h-10 rounded-xl flex items-center justify-center mb-3 ${
+                isActive ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-slate-800'
               }`}
             >
               <svg
-                className={`w-6 h-6 ${isListening ? 'text-emerald-400' : 'text-slate-500'}`}
+                className={`w-5 h-5 ${isActive ? 'text-emerald-400' : 'text-slate-500'}`}
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -72,13 +71,13 @@ export default function LiveTranscript({
                 />
               </svg>
             </div>
-            <p className={`text-sm font-semibold mb-1 ${isListening ? 'text-emerald-400' : 'text-slate-400'}`}>
-              {isListening ? 'Listening...' : 'Ready to listen'}
+            <p className={`text-sm font-semibold mb-1 ${isActive ? 'text-emerald-400' : 'text-slate-400'}`}>
+              {isActive ? 'Session active' : 'Ready to start'}
             </p>
             <p className="text-xs text-slate-500 leading-relaxed max-w-[200px]">
-              {isListening
-                ? 'Speak naturally — questions are detected and coached automatically.'
-                : 'Hit "Start Listening" above to begin.'}
+              {isActive
+                ? 'Hold the button (or Space) while the interviewer asks a question.'
+                : 'Click Start above to arm the microphone.'}
             </p>
           </div>
         )}

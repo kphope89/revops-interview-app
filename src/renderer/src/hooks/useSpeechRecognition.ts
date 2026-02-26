@@ -1,39 +1,32 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 
-export type SpeechStatus = 'idle' | 'listening' | 'paused' | 'error' | 'unsupported'
+export type SpeechStatus = 'idle' | 'armed' | 'recording' | 'transcribing' | 'error'
 
-interface UseSpeechRecognitionReturn {
+interface UsePressAndHoldReturn {
   status: SpeechStatus
-  transcript: string
-  interimTranscript: string
-  finalTranscripts: string[]
   error: string | null
-  start: () => void
-  stop: () => void
-  pause: () => void
-  resume: () => void
+  finalTranscripts: string[]
+  arm: () => Promise<void>
+  startHold: () => void
+  stopHold: () => void
+  disarm: () => void
   clearTranscripts: () => void
 }
 
-// Each segment is this long before being sent to Whisper.
-// Longer = more context for Whisper, but more latency.
-const SEGMENT_DURATION_MS = 7000
-
-export function useSpeechRecognition(): UseSpeechRecognitionReturn {
+export function useSpeechRecognition(): UsePressAndHoldReturn {
   const [status, setStatus] = useState<SpeechStatus>('idle')
-  const [transcript, setTranscript] = useState('')
-  const [interimTranscript, setInterimTranscript] = useState('')
   const [finalTranscripts, setFinalTranscripts] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
 
   const streamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
-  const segmentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const chunksRef = useRef<Blob[]>([])
   const mimeTypeRef = useRef('audio/webm')
-  const isActiveRef = useRef(false)
-  const isTranscribingRef = useRef(false)
+  const statusRef = useRef<SpeechStatus>('idle')
 
-  // FileReader-based base64 — reliably handles large buffers
+  // Keep ref in sync for use inside callbacks without stale closure
+  useEffect(() => { statusRef.current = status }, [status])
+
   const blobToBase64 = (blob: Blob): Promise<string> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader()
@@ -42,71 +35,8 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
       reader.readAsDataURL(blob)
     })
 
-  const transcribeBlob = useCallback(async (blob: Blob) => {
-    if (isTranscribingRef.current) return
-    isTranscribingRef.current = true
-    setInterimTranscript('Transcribing...')
-
-    try {
-      const base64 = await blobToBase64(blob)
-      const result = await window.electronAPI.transcribeAudio(base64, 'audio/webm')
-      if (result.success && result.text?.trim()) {
-        const text = result.text.trim()
-        setTranscript((prev) => (prev ? prev + ' ' + text : text))
-        setFinalTranscripts((prev) => [...prev, text])
-        setError(null)
-      } else if (!result.success && result.error) {
-        setError(result.error)
-      }
-    } catch (e) {
-      setError(`Transcription error: ${String(e)}`)
-    } finally {
-      isTranscribingRef.current = false
-      setInterimTranscript('')
-    }
-  }, [])
-
-  // Use a ref so onstop can call the latest version without stale closure
-  const startSegmentRef = useRef<() => void>(() => {})
-
-  startSegmentRef.current = () => {
-    if (!streamRef.current || !isActiveRef.current) return
-
-    const mimeType = mimeTypeRef.current
-    const chunks: Blob[] = []
-    const recorder = new MediaRecorder(streamRef.current, { mimeType })
-    recorderRef.current = recorder
-
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data)
-    }
-
-    recorder.onstop = () => {
-      // All chunks together form one complete, valid WebM file
-      const blob = new Blob(chunks, { type: mimeType })
-      if (blob.size >= 1000) {
-        transcribeBlob(blob) // fire and forget — chain continues independently
-      }
-      // Immediately start the next segment (no gap in recording)
-      if (isActiveRef.current && streamRef.current) {
-        startSegmentRef.current()
-      }
-    }
-
-    // Collect everything until stop() — no timeslice means the first
-    // ondataavailable call includes the WebM header + all data
-    recorder.start()
-
-    // Schedule stop after SEGMENT_DURATION_MS
-    if (segmentTimerRef.current) clearTimeout(segmentTimerRef.current)
-    segmentTimerRef.current = setTimeout(() => {
-      if (recorder.state === 'recording') {
-        recorder.stop()
-      }
-    }, SEGMENT_DURATION_MS)
-  }
-
-  const start = useCallback(async () => {
+  // Arm the session: get mic access and keep the stream open for holds
+  const arm = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -117,16 +47,12 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         }
       })
       streamRef.current = stream
-      isActiveRef.current = true
-
       mimeTypeRef.current = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : MediaRecorder.isTypeSupported('audio/webm')
         ? 'audio/webm'
         : 'audio/ogg'
-
-      startSegmentRef.current()
-      setStatus('listening')
+      setStatus('armed')
       setError(null)
     } catch {
       setError(
@@ -136,80 +62,68 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     }
   }, [])
 
-  const stop = useCallback(() => {
-    isActiveRef.current = false
+  // Begin recording on press
+  const startHold = useCallback(() => {
+    if (!streamRef.current || statusRef.current !== 'armed') return
+    chunksRef.current = []
+    const recorder = new MediaRecorder(streamRef.current, { mimeType: mimeTypeRef.current })
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+    recorder.start()
+    recorderRef.current = recorder
+    setStatus('recording')
+  }, [])
 
-    if (segmentTimerRef.current) {
-      clearTimeout(segmentTimerRef.current)
-      segmentTimerRef.current = null
+  // End recording on release, send to Whisper, return to armed
+  const stopHold = useCallback(() => {
+    if (!recorderRef.current || statusRef.current !== 'recording') return
+    const recorder = recorderRef.current
+    recorderRef.current = null
+    setStatus('transcribing')
+
+    recorder.onstop = async () => {
+      const blob = new Blob(chunksRef.current, { type: mimeTypeRef.current })
+      if (blob.size >= 500) {
+        try {
+          const base64 = await blobToBase64(blob)
+          const result = await window.electronAPI.transcribeAudio(base64, 'audio/webm')
+          if (result.success && result.text?.trim()) {
+            setFinalTranscripts((prev) => [...prev, result.text.trim()])
+          } else if (!result.success && result.error) {
+            setError(result.error)
+          }
+        } catch (e) {
+          setError(`Transcription error: ${String(e)}`)
+        }
+      }
+      setStatus('armed')
     }
 
+    recorder.stop()
+  }, [])
+
+  // Release mic and end session
+  const disarm = useCallback(() => {
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
-      recorderRef.current.onstop = null // don't chain into a new segment
+      recorderRef.current.onstop = null
       recorderRef.current.stop()
     }
     recorderRef.current = null
-
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
-
     setStatus('idle')
-    setInterimTranscript('')
+    setError(null)
   }, [])
-
-  const pause = useCallback(() => {
-    isActiveRef.current = false
-
-    if (segmentTimerRef.current) {
-      clearTimeout(segmentTimerRef.current)
-      segmentTimerRef.current = null
-    }
-
-    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
-      recorderRef.current.onstop = null // don't chain into a new segment
-      recorderRef.current.stop()
-    }
-    recorderRef.current = null
-
-    setStatus('paused')
-    setInterimTranscript('')
-  }, [])
-
-  const resume = useCallback(async () => {
-    if (streamRef.current) {
-      isActiveRef.current = true
-      startSegmentRef.current()
-      setStatus('listening')
-    } else {
-      await start()
-    }
-  }, [start])
 
   const clearTranscripts = useCallback(() => {
-    setTranscript('')
-    setInterimTranscript('')
     setFinalTranscripts([])
   }, [])
 
   useEffect(() => {
     return () => {
-      isActiveRef.current = false
-      if (segmentTimerRef.current) clearTimeout(segmentTimerRef.current)
       if (recorderRef.current?.state !== 'inactive') recorderRef.current?.stop()
       streamRef.current?.getTracks().forEach((t) => t.stop())
     }
   }, [])
 
-  return {
-    status,
-    transcript,
-    interimTranscript,
-    finalTranscripts,
-    error,
-    start,
-    stop,
-    pause,
-    resume,
-    clearTranscripts
-  }
+  return { status, error, finalTranscripts, arm, startHold, stopHold, disarm, clearTranscripts }
 }
