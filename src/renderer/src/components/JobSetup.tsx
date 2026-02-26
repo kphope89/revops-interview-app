@@ -20,6 +20,14 @@ const EXAMPLE_JOBS = [
   }
 ]
 
+const HOW_IT_WORKS = [
+  { icon: '📋', text: 'Paste or fetch the job description for role-specific coaching' },
+  { icon: '🎤', text: 'Start the session — the assistant listens via your microphone' },
+  { icon: '🔍', text: 'Questions are auto-detected from the live transcript' },
+  { icon: '⚡', text: 'Instant talk tracks, key points, metrics, and tools appear' },
+  { icon: '📺', text: 'Pop out the teleprompter to read your response hands-free' },
+]
+
 export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
   const [inputMode, setInputMode] = useState<'paste' | 'url'>('paste')
   const [url, setUrl] = useState('')
@@ -57,6 +65,7 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
   }
 
   const canStart = description.trim().length > 20 && hasApiKey
+  const wordCount = description.trim().split(/\s+/).filter(Boolean).length
 
   const handleStart = () => {
     if (!canStart) return
@@ -69,37 +78,55 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
   }
 
   return (
-    <div className="flex h-full">
-      {/* Left: Setup form */}
-      <div className="flex-1 overflow-y-auto p-8">
-        <div className="max-w-2xl mx-auto">
-          <div className="mb-8">
-            <h2 className="text-2xl font-bold text-slate-100 mb-2">Setup Your Interview</h2>
-            <p className="text-slate-400">
-              Paste the job description or fetch it from a URL. The assistant will use this to tailor every response to this specific role.
+    <div className="flex h-full overflow-hidden">
+      {/* ── Left: Setup form ── */}
+      <div className="flex-1 overflow-y-auto">
+        {/* Hero section */}
+        <div className="px-10 pt-10 pb-6 border-b border-slate-800/60">
+          <div className="max-w-xl">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xs font-semibold uppercase tracking-widest text-blue-400/80 bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 rounded-full">
+                Interview Prep
+              </span>
+            </div>
+            <h2 className="text-3xl font-bold text-slate-100 leading-tight mb-2"
+              style={{ letterSpacing: '-0.02em' }}>
+              Set up your session
+            </h2>
+            <p className="text-slate-500 text-sm leading-relaxed">
+              Add the job description and the AI will tailor every coaching response to this specific role.
             </p>
           </div>
+        </div>
 
+        <div className="px-10 py-8 max-w-xl">
+          {/* API key warning */}
           {!hasApiKey && (
-            <div className="mb-5 p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-              <p className="text-amber-300 text-sm font-medium mb-1">API Key Required</p>
-              <p className="text-amber-400/80 text-sm">
-                You need an Anthropic API key to use the assistant.{' '}
-                <button onClick={onSettings} className="text-amber-300 underline">
-                  Add it in Settings
-                </button>
-                .
-              </p>
+            <div className="mb-6 p-4 bg-amber-500/8 border border-amber-500/20 rounded-2xl flex items-start gap-3">
+              <div className="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <svg className="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd"/>
+                </svg>
+              </div>
+              <div>
+                <p className="text-amber-300 text-sm font-semibold mb-0.5">API Key Required</p>
+                <p className="text-amber-400/70 text-xs leading-relaxed">
+                  You need an Anthropic API key to use the assistant.{' '}
+                  <button onClick={onSettings} className="text-amber-300 underline underline-offset-2 hover:text-amber-200">
+                    Add it in Settings →
+                  </button>
+                </p>
+              </div>
             </div>
           )}
 
           {/* Role metadata */}
-          <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="grid grid-cols-2 gap-3 mb-5">
             <div>
               <label className="label">Job Title</label>
               <input
                 className="input"
-                placeholder="e.g. Director of Revenue Operations"
+                placeholder="Director of RevOps"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
               />
@@ -108,7 +135,7 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
               <label className="label">Company</label>
               <input
                 className="input"
-                placeholder="e.g. Acme Corp"
+                placeholder="Acme Corp"
                 value={company}
                 onChange={(e) => setCompany(e.target.value)}
               />
@@ -116,29 +143,37 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
           </div>
 
           {/* Input mode toggle */}
-          <div className="flex gap-1 mb-4 bg-surface-1 p-1 rounded-lg w-fit">
-            <button
-              onClick={() => setInputMode('paste')}
-              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                inputMode === 'paste'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Paste Description
-            </button>
-            <button
-              onClick={() => setInputMode('url')}
-              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                inputMode === 'url'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              Fetch from URL
-            </button>
+          <div className="flex gap-1 mb-4 bg-slate-900/80 border border-slate-800 p-1 rounded-xl w-fit">
+            {(['paste', 'url'] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setInputMode(mode)}
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 ${
+                  inputMode === mode
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                {mode === 'paste' ? (
+                  <span className="flex items-center gap-1.5">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                    </svg>
+                    Paste
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                    </svg>
+                    From URL
+                  </span>
+                )}
+              </button>
+            ))}
           </div>
 
+          {/* URL input */}
           {inputMode === 'url' && (
             <div className="mb-4">
               <label className="label">Job Posting URL</label>
@@ -153,26 +188,42 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
                 <button
                   onClick={handleFetchUrl}
                   disabled={!url.trim() || fetchingUrl}
-                  className="btn-primary whitespace-nowrap"
+                  className="btn-primary whitespace-nowrap flex items-center gap-1.5"
                 >
-                  {fetchingUrl ? 'Fetching...' : 'Fetch'}
+                  {fetchingUrl ? (
+                    <>
+                      <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                      </svg>
+                      Fetching...
+                    </>
+                  ) : 'Fetch'}
                 </button>
               </div>
-              {urlError && <p className="text-red-400 text-xs mt-1">{urlError}</p>}
+              {urlError && (
+                <p className="text-red-400 text-xs mt-1.5 flex items-center gap-1">
+                  <svg className="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd"/>
+                  </svg>
+                  {urlError}
+                </p>
+              )}
             </div>
           )}
 
+          {/* Paste textarea */}
           {inputMode === 'paste' && (
-            <div className="mb-4">
-              <label className="label">
-                Job Description
-                <span className="text-slate-500 font-normal ml-1">
-                  ({description.trim().split(/\s+/).filter(Boolean).length} words)
-                </span>
-              </label>
+            <div className="mb-5">
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="label mb-0">Job Description</label>
+                {wordCount > 0 && (
+                  <span className="text-xs text-slate-600">{wordCount} words</span>
+                )}
+              </div>
               <textarea
-                className="input h-56 resize-none font-mono text-sm leading-relaxed"
-                placeholder="Paste the full job description here. Include responsibilities, requirements, and any context about the team and company. The more detail, the better the coaching."
+                className="input h-52 resize-none font-mono text-sm leading-relaxed"
+                placeholder="Paste the full job description here — responsibilities, requirements, team context. More detail = better coaching."
                 value={description}
                 onChange={(e) => { setDescription(e.target.value); setFetchedUrl(undefined) }}
               />
@@ -183,61 +234,84 @@ export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
           <button
             onClick={handleStart}
             disabled={!canStart}
-            className="btn-primary w-full py-3 text-base font-semibold"
+            className="btn-primary w-full py-3.5 text-base font-bold flex items-center justify-center gap-2 rounded-2xl"
           >
-            Start Interview Session
+            {canStart ? (
+              <>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                </svg>
+                Start Interview Session
+              </>
+            ) : (
+              <span className="opacity-60">
+                {!hasApiKey ? 'API Key Required' : 'Add Job Description to Start'}
+              </span>
+            )}
           </button>
 
           {!hasApiKey && (
-            <p className="text-center text-xs text-slate-500 mt-2">
-              API key required —{' '}
-              <button onClick={onSettings} className="text-blue-400 hover:text-blue-300">
-                configure in Settings
+            <p className="text-center text-xs text-slate-600 mt-2.5">
+              <button onClick={onSettings} className="text-blue-500 hover:text-blue-400 underline underline-offset-2">
+                Configure API key in Settings
               </button>
             </p>
           )}
         </div>
       </div>
 
-      {/* Right: Sidebar with tips and examples */}
-      <div className="w-80 border-l border-slate-700/50 bg-surface-1 p-5 overflow-y-auto">
-        <h3 className="text-sm font-semibold text-slate-300 mb-3">Quick Start Examples</h3>
-        <div className="space-y-3 mb-6">
-          {EXAMPLE_JOBS.map((job) => (
-            <button
-              key={job.title}
-              onClick={() => handleLoadExample(job)}
-              className="w-full text-left p-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors"
-            >
-              <p className="text-sm font-medium text-slate-200">{job.title}</p>
-              <p className="text-xs text-slate-400 mt-0.5">{job.company}</p>
-            </button>
-          ))}
+      {/* ── Right: Sidebar ── */}
+      <div className="w-72 border-l border-slate-800/60 overflow-y-auto flex flex-col">
+        {/* Examples section */}
+        <div className="p-5 border-b border-slate-800/60">
+          <p className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-3">Quick Examples</p>
+          <div className="space-y-2">
+            {EXAMPLE_JOBS.map((job) => (
+              <button
+                key={job.title}
+                onClick={() => handleLoadExample(job)}
+                className="w-full text-left p-3.5 rounded-xl bg-slate-900/60 hover:bg-slate-800/80 border border-slate-800/80 hover:border-slate-700/60 transition-all duration-150 group"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-200 leading-snug mb-0.5 truncate">{job.title}</p>
+                    <p className="text-xs text-slate-500">{job.company}</p>
+                  </div>
+                  <svg className="w-4 h-4 text-slate-700 group-hover:text-blue-400 flex-shrink-0 mt-0.5 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
 
-        <h3 className="text-sm font-semibold text-slate-300 mb-3">How It Works</h3>
-        <ol className="space-y-3 text-xs text-slate-400">
-          {[
-            'Paste or fetch the job description to give the assistant context about the role',
-            'Start the session and begin your interview call — the assistant listens via your microphone',
-            'Questions are automatically detected from the live transcript',
-            'Instant coaching appears: suggested response, key talking points, metrics to mention, and tools to reference',
-            'Copy any response or use it as a guide while you answer'
-          ].map((step, i) => (
-            <li key={i} className="flex gap-2.5">
-              <span className="flex-shrink-0 w-5 h-5 rounded-full bg-blue-600/20 text-blue-400 text-xs flex items-center justify-center font-medium">
-                {i + 1}
-              </span>
-              <span className="leading-relaxed">{step}</span>
-            </li>
-          ))}
-        </ol>
+        {/* How it works */}
+        <div className="p-5 flex-1">
+          <p className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4">How It Works</p>
+          <ol className="space-y-3.5">
+            {HOW_IT_WORKS.map((step, i) => (
+              <li key={i} className="flex items-start gap-3">
+                <span className="text-base leading-none flex-shrink-0 mt-0.5">{step.icon}</span>
+                <p className="text-xs text-slate-400 leading-relaxed">{step.text}</p>
+              </li>
+            ))}
+          </ol>
+        </div>
 
-        <div className="mt-6 p-3 bg-slate-800 rounded-lg border border-slate-700">
-          <p className="text-xs font-medium text-slate-300 mb-1">Privacy Note</p>
-          <p className="text-xs text-slate-500 leading-relaxed">
-            Audio is captured locally and transcribed via OpenAI Whisper. Only the text transcript is sent to Anthropic's API for coaching. Both API keys are stored locally on your device and never shared.
-          </p>
+        {/* Privacy note */}
+        <div className="p-5 border-t border-slate-800/60">
+          <div className="p-3.5 bg-slate-900/60 rounded-xl border border-slate-800">
+            <div className="flex items-center gap-2 mb-1.5">
+              <svg className="w-3.5 h-3.5 text-slate-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+              <p className="text-xs font-semibold text-slate-400">Private by default</p>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Audio is captured locally and transcribed via Whisper. Only text goes to Anthropic. API keys are stored on your device only.
+            </p>
+          </div>
         </div>
       </div>
     </div>

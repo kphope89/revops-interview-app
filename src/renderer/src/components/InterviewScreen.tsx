@@ -11,7 +11,7 @@ interface Props {
   onEnd: () => void
 }
 
-const QUESTION_CHECK_DEBOUNCE = 3000 // ms after speech pause before checking for questions
+const QUESTION_CHECK_DEBOUNCE = 3000
 const MIN_TRANSCRIPT_WORDS = 6
 
 export default function InterviewScreen({ jobContext, settings }: Props) {
@@ -25,6 +25,7 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [sessionStarted, setSessionStarted] = useState(false)
   const [prepState, setPrepState] = useState<PrepQuestionsState>({ status: 'idle', questions: [] })
+  const [teleprompterOpen, setTeleprompterOpen] = useState(false)
 
   const lastCheckedTranscriptRef = useRef('')
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -32,7 +33,6 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
   const processedFinalCountRef = useRef(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const transcriptEntriesRef = useRef<TranscriptEntry[]>([])
-  // Ref so analyzeQuestion always reads the latest settings without being in the dependency array
   const settingsRef = useRef(settings)
   useEffect(() => { settingsRef.current = settings }, [settings])
 
@@ -50,12 +50,11 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
     }
   }, [status, sessionStarted])
 
-  // Keep ref in sync so analyzeQuestion always reads current entries regardless of closure age
   useEffect(() => {
     transcriptEntriesRef.current = transcriptEntries
   }, [transcriptEntries])
 
-  // Generate predicted questions from the job description on mount
+  // Generate predicted questions on mount
   useEffect(() => {
     const run = async () => {
       setPrepState({ status: 'loading', questions: [] })
@@ -78,7 +77,7 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
       }
     }
     run()
-  }, []) // intentionally empty — run once on mount
+  }, [])
 
   // Process new final transcript segments
   useEffect(() => {
@@ -95,7 +94,6 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
 
     setTranscriptEntries((prev) => [...prev, ...newEntries])
 
-    // Debounce question detection
     const combinedNew = newSegments.join(' ')
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
     debounceTimerRef.current = setTimeout(() => {
@@ -124,7 +122,6 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
           const type = result.data.type as TranscriptEntry['questionType']
           const questionId = crypto.randomUUID()
 
-          // Mark transcript entries as question and link to the analyzed question
           setTranscriptEntries((prev) =>
             prev.map((entry) =>
               entry.text.toLowerCase().includes(question.toLowerCase().slice(0, 30))
@@ -136,7 +133,7 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
           analyzeQuestion(question, questionId)
         }
       } catch {
-        // Silent fail for detection
+        // Silent fail
       }
     },
     []
@@ -157,12 +154,9 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
     setSelectedQuestionId(questionId)
     setIsAnalyzing(true)
 
-    // Clean up any lingering listeners from a prior analysis
     window.electronAPI.removeStreamListeners()
 
     const knowledgeContext = getKnowledgeContext()
-    // Read from ref so this always reflects current transcript, even when called
-    // from checkForQuestion which closes over an older version of analyzeQuestion
     const conversationHistory = transcriptEntriesRef.current
       .slice(-10)
       .map((e) => e.text)
@@ -257,75 +251,115 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
 
   return (
     <div className="flex h-full">
-      {/* Left panel: Transcript */}
-      <div className="w-[320px] flex flex-col border-r border-slate-700/50">
+      {/* ── Left panel: Transcript ── */}
+      <div className="w-[300px] flex flex-col border-r border-slate-800/70 bg-[#080d1a]">
         {/* Session controls */}
-        <div className="border-b border-slate-700/50 bg-surface-1">
-          {/* Top bar: status + timer + buttons */}
-          <div className="flex items-center justify-between px-4 py-3">
+        <div className="border-b border-slate-800/70 px-4 py-3 space-y-3">
+          {/* Status row */}
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div
-                className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
-                  status === 'listening'
-                    ? 'bg-emerald-400 listening-dot'
-                    : status === 'paused'
-                    ? 'bg-amber-400'
-                    : 'bg-slate-500'
-                }`}
-              />
+              {/* Status dot */}
+              <div className="relative flex-shrink-0">
+                <div
+                  className={`w-2.5 h-2.5 rounded-full ${
+                    status === 'listening'
+                      ? 'bg-emerald-400 listening-dot'
+                      : status === 'paused'
+                      ? 'bg-amber-400'
+                      : 'bg-slate-600'
+                  }`}
+                />
+                {status === 'listening' && (
+                  <div className="absolute inset-0 rounded-full bg-emerald-400/30 glow-pulse" />
+                )}
+              </div>
+
               <div>
-                <p className="text-sm font-semibold text-slate-200 leading-tight">
+                <p className={`text-sm font-semibold leading-tight ${
+                  status === 'listening' ? 'text-emerald-300'
+                  : status === 'paused' ? 'text-amber-300'
+                  : 'text-slate-400'
+                }`}>
                   {status === 'listening'
-                    ? interimTranscript
-                      ? 'Transcribing...'
-                      : 'Listening'
-                    : status === 'paused'
-                    ? 'Paused'
+                    ? interimTranscript ? 'Transcribing…' : 'Listening'
+                    : status === 'paused' ? 'Paused'
                     : 'Ready'}
                 </p>
                 {sessionStarted && (
-                  <p className="text-xs text-slate-500 font-mono leading-tight">{formatTime(elapsedSeconds)}</p>
+                  <p className="text-[11px] text-slate-600 font-mono leading-tight">{formatTime(elapsedSeconds)}</p>
                 )}
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              {status === 'idle' || status === 'error' ? (
-                <button onClick={start} className="btn-success text-sm py-1.5 px-4">
-                  Start Listening
+            {/* Control buttons with icons */}
+            <div className="flex items-center gap-1.5">
+              {(status === 'idle' || status === 'error') && (
+                <button
+                  onClick={start}
+                  className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-1.5 rounded-xl transition-all duration-150 shadow-sm hover:shadow-emerald-500/20 hover:shadow-md"
+                >
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M8 5v14l11-7z"/>
+                  </svg>
+                  Start
                 </button>
-              ) : status === 'listening' ? (
-                <button onClick={pause} className="btn-secondary text-sm py-1.5 px-4">
+              )}
+              {status === 'listening' && (
+                <button
+                  onClick={pause}
+                  className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium px-3 py-1.5 rounded-xl border border-slate-700/60 transition-all duration-150"
+                >
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                  </svg>
                   Pause
                 </button>
-              ) : (
-                <button onClick={resume} className="btn-success text-sm py-1.5 px-4">
+              )}
+              {status === 'paused' && (
+                <button
+                  onClick={resume}
+                  className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-1.5 rounded-xl transition-all duration-150"
+                >
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M8 5v14l11-7z"/>
+                  </svg>
                   Resume
                 </button>
               )}
               {sessionStarted && (
-                <button onClick={stop} className="btn-danger text-sm py-1.5 px-4">
-                  Stop
+                <button
+                  onClick={stop}
+                  className="flex items-center justify-center w-7 h-7 bg-slate-800 hover:bg-red-500/20 text-slate-500 hover:text-red-400 rounded-xl border border-slate-700/60 hover:border-red-500/30 transition-all duration-150"
+                  title="Stop session"
+                >
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 6h12v12H6z"/>
+                  </svg>
                 </button>
               )}
             </div>
           </div>
 
           {/* Job context pill */}
-          <div className="flex items-center gap-2 mx-4 mb-3 bg-slate-800/60 rounded-lg px-3 py-2">
-            <div className="w-1.5 h-1.5 bg-blue-400 rounded-full flex-shrink-0" />
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium text-slate-200 truncate">{jobContext.title}</p>
-              <p className="text-xs text-slate-400 truncate">{jobContext.company}</p>
+          <div className="flex items-center gap-2 bg-slate-900/60 rounded-xl px-3 py-2 border border-slate-800/60">
+            <div className="w-5 h-5 rounded-lg bg-blue-600/20 flex items-center justify-center flex-shrink-0">
+              <svg className="w-3 h-3 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
             </div>
-            {status === 'listening' && (
-              <span className="text-xs text-slate-500 flex-shrink-0">captures every 7s</span>
-            )}
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-slate-200 truncate leading-tight">{jobContext.title}</p>
+              <p className="text-[11px] text-slate-500 truncate leading-tight">{jobContext.company}</p>
+            </div>
           </div>
         </div>
 
+        {/* Error display */}
         {error && (
-          <div className="mx-4 mt-3 p-2.5 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-400">
+          <div className="mx-4 mt-3 p-2.5 bg-red-500/10 border border-red-500/20 rounded-xl text-xs text-red-400 flex items-center gap-2">
+            <svg className="w-3.5 h-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd"/>
+            </svg>
             {error}
           </div>
         )}
@@ -341,7 +375,7 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
         />
       </div>
 
-      {/* Right panel: Responses */}
+      {/* ── Right panel: Responses ── */}
       <div className="flex-1 overflow-hidden">
         <ResponsePanel
           questions={analyzedQuestions}
@@ -351,6 +385,9 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
           onManualQuestion={handleManualQuestion}
           prepState={prepState}
           onPracticeQuestion={handleManualQuestion}
+          teleprompterOpen={teleprompterOpen}
+          onTeleprompterToggle={() => setTeleprompterOpen((v) => !v)}
+          selectedQuestion={selectedQuestion}
         />
       </div>
     </div>
