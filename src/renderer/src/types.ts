@@ -1,10 +1,13 @@
 export type AppScreen = 'setup' | 'interview' | 'settings'
 
+export type ToneMode = 'conversational' | 'tight' | 'exec'
+
 export interface Settings {
   apiKey: string
   model: string
   resume: string
   openaiApiKey: string
+  toneMode: ToneMode
 }
 
 export interface JobContext {
@@ -40,6 +43,8 @@ export interface AnalyzedQuestion {
   isLoading: boolean
   streamingText?: string
   error?: string
+  followUps?: string[]
+  followUpsLoading?: boolean
 }
 
 export interface PrepQuestion {
@@ -53,6 +58,31 @@ export interface PrepQuestionsState {
   status: 'idle' | 'loading' | 'ready' | 'error'
   questions: PrepQuestion[]
   error?: string
+}
+
+export type KnowledgeItemType = 'project' | 'achievement' | 'framework' | 'brief'
+
+export interface KnowledgeItem {
+  id: string
+  title: string
+  type: KnowledgeItemType
+  content: string
+  createdAt: string
+}
+
+export interface UserProfile {
+  name: string
+  currentTitle: string
+  currentCompany: string
+  yearsExperience: string       // "1-3 years" | "4-6 years" | "7-10 years" | "10+ years"
+  targetTitle: string
+  targetStage: string           // "Seed / Series A" | "Series B-C" | ...
+  targetIndustry: string
+  lookingBecause: string
+  topStrengths: string[]        // subset of the 14 RevOps competency labels, max 5
+  signatureMetrics: string[]    // fixed array of 3 strings (empty string = blank)
+  differentiator: string
+  resume: string
 }
 
 export interface ElectronAPI {
@@ -89,6 +119,31 @@ export interface ElectronAPI {
     base64Audio: string,
     mimeType: string
   ) => Promise<{ success: boolean; text?: string; error?: string }>
+
+  getKnowledgeItems: () => Promise<KnowledgeItem[]>
+  upsertKnowledgeItem: (item: KnowledgeItem) => Promise<boolean>
+  deleteKnowledgeItem: (id: string) => Promise<boolean>
+
+  getSavedJobContext: () => Promise<JobContext | null>
+  saveJobContext: (ctx: JobContext) => Promise<boolean>
+  generateFollowUpQuestions: (payload: {
+    question: string
+    suggestedResponse: string
+    jobDescription: string
+  }) => Promise<{ success: boolean; questions?: string[]; error?: string }>
+
+  getProfile: () => Promise<UserProfile>
+  saveProfile: (profile: UserProfile) => Promise<boolean>
+
+  // Teleprompter window control
+  openTeleprompter: (data: unknown) => void
+  closeTeleprompter: () => void
+  updateTeleprompter: (data: unknown) => void
+  onTeleprompterQuestion: (cb: (data: unknown) => void) => void
+  onTeleprompterChunk: (cb: (data: { requestId: string; delta: string }) => void) => void
+  onTeleprompterDone: (cb: (data: { requestId: string; fullText: string }) => void) => void
+  onTeleprompterError: (cb: (data: { requestId: string; error: string }) => void) => void
+  removeTeleprompterListeners: () => void
 }
 
 declare global {

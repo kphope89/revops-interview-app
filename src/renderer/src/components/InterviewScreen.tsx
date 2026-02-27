@@ -1,9 +1,25 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { JobContext, Settings, AnalyzedQuestion, TranscriptEntry, QuestionAnalysis, PrepQuestionsState } from '../types'
+import { JobContext, Settings, AnalyzedQuestion, TranscriptEntry, QuestionAnalysis, PrepQuestionsState, KnowledgeItem, UserProfile } from '../types'
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
-import { getKnowledgeContext } from '../data/revops-knowledge'
+import { getKnowledgeContext, buildUserKnowledgeSection } from '../data/revops-knowledge'
+import { buildProfileSection } from '../data/buildProfileSection'
 import LiveTranscript from './LiveTranscript'
 import ResponsePanel from './ResponsePanel'
+
+const DEFAULT_PROFILE: UserProfile = {
+  name: '',
+  currentTitle: '',
+  currentCompany: '',
+  yearsExperience: '',
+  targetTitle: '',
+  targetStage: '',
+  targetIndustry: '',
+  lookingBecause: '',
+  topStrengths: [],
+  signatureMetrics: ['', '', ''],
+  differentiator: '',
+  resume: ''
+}
 
 interface Props {
   jobContext: JobContext
@@ -25,12 +41,20 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
   const [sessionStarted, setSessionStarted] = useState(false)
   const [prepState, setPrepState] = useState<PrepQuestionsState>({ status: 'idle', questions: [] })
   const [teleprompterOpen, setTeleprompterOpen] = useState(false)
+  const [exportCopied, setExportCopied] = useState(false)
+
+  const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItem[]>([])
+  const [userProfile, setUserProfile] = useState<UserProfile>(DEFAULT_PROFILE)
 
   const processedFinalCountRef = useRef(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const transcriptEntriesRef = useRef<TranscriptEntry[]>([])
   const settingsRef = useRef(settings)
   useEffect(() => { settingsRef.current = settings }, [settings])
+  const knowledgeItemsRef = useRef<KnowledgeItem[]>([])
+  useEffect(() => { knowledgeItemsRef.current = knowledgeItems }, [knowledgeItems])
+  const userProfileRef = useRef<UserProfile>(DEFAULT_PROFILE)
+  useEffect(() => { userProfileRef.current = userProfile }, [userProfile])
 
   // Timer — runs while session is active (not idle/error)
   useEffect(() => {
@@ -51,15 +75,26 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
     transcriptEntriesRef.current = transcriptEntries
   }, [transcriptEntries])
 
+  // Fetch knowledge items and profile on mount
+  useEffect(() => {
+    window.electronAPI.getKnowledgeItems().then(setKnowledgeItems)
+    window.electronAPI.getProfile().then((p) => {
+      const metrics = p.signatureMetrics ?? ['', '', '']
+      while (metrics.length < 3) metrics.push('')
+      setUserProfile({ ...DEFAULT_PROFILE, ...p, signatureMetrics: metrics.slice(0, 3) })
+    })
+  }, [])
+
   // Generate predicted questions on mount
   useEffect(() => {
     const run = async () => {
       setPrepState({ status: 'loading', questions: [] })
       try {
+        const profileSection = buildProfileSection(userProfileRef.current)
         const result = await window.electronAPI.generatePrepQuestions({
           jobDescription: `${jobContext.title} at ${jobContext.company}\n\n${jobContext.description}`,
-          knowledgeContext: getKnowledgeContext(),
-          resume: settingsRef.current.resume ?? ''
+          knowledgeContext: getKnowledgeContext() + buildUserKnowledgeSection(knowledgeItemsRef.current) + (profileSection ? '\n\n' + profileSection : ''),
+          resume: userProfileRef.current.resume || settingsRef.current.resume || ''
         })
         if (result.success && result.questions) {
           setPrepState({
@@ -131,13 +166,22 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
       streamingText: ''
     }
 
-    setAnalyzedQuestions((prev) => [entry, ...prev])
+    setAnalyzedQuestions((prev) => {
+      const existingIdx = prev.findIndex((q) => q.id === questionId)
+      if (existingIdx >= 0) {
+        const next = [...prev]
+        next[existingIdx] = entry
+        return next
+      }
+      return [entry, ...prev]
+    })
     setSelectedQuestionId(questionId)
     setIsAnalyzing(true)
 
     window.electronAPI.removeStreamListeners()
 
-    const knowledgeContext = getKnowledgeContext()
+    const profileSection = buildProfileSection(userProfile)
+    const knowledgeContext = getKnowledgeContext() + buildUserKnowledgeSection(knowledgeItems) + (profileSection ? '\n\n' + profileSection : '')
     const conversationHistory = transcriptEntriesRef.current
       .slice(-10)
       .map((e) => e.text)
@@ -197,17 +241,50 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
         jobDescription: `${jobContext.title} at ${jobContext.company}\n\n${jobContext.description}`,
         knowledgeContext,
         conversationHistory,
-        resume: settingsRef.current.resume ?? ''
+        resume: userProfile.resume || settingsRef.current.resume || ''
       },
       questionId
     )
-  }, [jobContext])
+  }, [jobContext, knowledgeItems, userProfile])
 
   const handleManualQuestion = useCallback(
     (question: string) => {
       if (question.trim()) analyzeQuestion(question.trim())
     },
     [analyzeQuestion]
+  )
+
+  const handleReanalyze = useCallback(
+    (questionId: string, question: string) => {
+      analyzeQuestion(question, questionId)
+    },
+    [analyzeQuestion]
+  )
+
+  const handleGenerateFollowUps = useCallback(
+    async (questionId: string) => {
+      const question = analyzedQuestions.find((q) => q.id === questionId)
+      if (!question?.analysis) return
+
+      setAnalyzedQuestions((prev) =>
+        prev.map((q) => (q.id === questionId ? { ...q, followUpsLoading: true } : q))
+      )
+
+      const result = await window.electronAPI.generateFollowUpQuestions({
+        question: question.question,
+        suggestedResponse: question.analysis.suggestedResponse,
+        jobDescription: `${jobContext.title} at ${jobContext.company}\n\n${jobContext.description}`
+      })
+
+      setAnalyzedQuestions((prev) =>
+        prev.map((q) =>
+          q.id === questionId
+            ? { ...q, followUpsLoading: false, followUps: result.questions ?? [] }
+            : q
+        )
+      )
+    },
+    [analyzedQuestions, jobContext]
   )
 
   const handleClearSession = () => {
@@ -224,6 +301,27 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
     const m = Math.floor(seconds / 60).toString().padStart(2, '0')
     const s = (seconds % 60).toString().padStart(2, '0')
     return `${m}:${s}`
+  }
+
+  const buildExportMarkdown = () => {
+    const now = new Date().toLocaleString()
+    const chronological = [...analyzedQuestions].reverse()
+    const header = `# Interview Session — ${jobContext.title} at ${jobContext.company}\n${now}`
+    const sections = chronological
+      .filter((q) => q.analysis)
+      .map((q, i) => {
+        const a = q.analysis!
+        const keyPoints = a.keyPoints.map((p) => `- ${p}`).join('\n')
+        return `---\n\n## Q${i + 1}: ${q.question}\n**Competency:** ${a.competency}\n**Key Points:**\n${keyPoints}\n\n**Talk Track:**\n${a.suggestedResponse}`
+      })
+      .join('\n\n')
+    return sections ? `${header}\n\n${sections}` : header
+  }
+
+  const handleExport = async () => {
+    await navigator.clipboard.writeText(buildExportMarkdown())
+    setExportCopied(true)
+    setTimeout(() => setExportCopied(false), 2000)
   }
 
   const selectedQuestion = analyzedQuestions.find((q) => q.id === selectedQuestionId) || null
@@ -352,6 +450,19 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
               <p className="text-[11px] text-slate-500 truncate leading-tight">{jobContext.company}</p>
             </div>
           </div>
+
+          {/* Export button — appears once at least one question is fully analyzed */}
+          {analyzedQuestions.some((q) => q.analysis) && (
+            <button
+              onClick={handleExport}
+              className="w-full flex items-center justify-center gap-1.5 text-xs py-1 rounded-lg transition-colors text-slate-500 hover:text-slate-300 hover:bg-slate-800/50"
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              {exportCopied ? 'Copied!' : 'Copy session summary'}
+            </button>
+          )}
         </div>
 
         {/* Error display */}
@@ -387,6 +498,8 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
           teleprompterOpen={teleprompterOpen}
           onTeleprompterToggle={() => setTeleprompterOpen((v) => !v)}
           selectedQuestion={selectedQuestion}
+          onReanalyze={handleReanalyze}
+          onGenerateFollowUps={handleGenerateFollowUps}
         />
       </div>
     </div>

@@ -8,12 +8,104 @@ import { createReadStream } from 'fs'
 import { writeFile, unlink } from 'fs/promises'
 import { tmpdir } from 'os'
 
+interface KnowledgeItem {
+  id: string
+  title: string
+  type: 'project' | 'achievement' | 'framework' | 'brief'
+  content: string
+  createdAt: string
+}
+
+interface JobContext {
+  title: string
+  company: string
+  description: string
+  url?: string
+}
+
+interface UserProfile {
+  name: string
+  currentTitle: string
+  currentCompany: string
+  yearsExperience: string
+  targetTitle: string
+  targetStage: string
+  targetIndustry: string
+  lookingBecause: string
+  topStrengths: string[]
+  signatureMetrics: string[]
+  differentiator: string
+  resume: string
+}
+
+const DEFAULT_PROFILE: UserProfile = {
+  name: '',
+  currentTitle: '',
+  currentCompany: '',
+  yearsExperience: '',
+  targetTitle: '',
+  targetStage: '',
+  targetIndustry: '',
+  lookingBecause: '',
+  topStrengths: [],
+  signatureMetrics: ['', '', ''],
+  differentiator: '',
+  resume: ''
+}
+
+type ToneMode = 'conversational' | 'tight' | 'exec'
+
+const TONE_INSTRUCTIONS: Record<ToneMode, string> = {
+  conversational: `## Voice & Delivery
+Write as if you're speaking in the room, not writing a slide deck.
+- Use contractions naturally (I've, we'd, it's, that's)
+- Vary sentence length — short punchy sentences mixed with more expansive ones
+- Lead with the most interesting thing, not with setup or context-framing
+- It's OK to say "honestly" or "what I've found is" — these signal authenticity
+- First person throughout; avoid jargon stacking
+- Don't start every paragraph with a strategic frame — start with the thing that happened, or the problem, or a direct opinion
+
+## Response length
+- Opener questions ("Tell me about yourself", "Why this role"): 1–2 short paragraphs, direct and specific
+- Behavioral questions: 2–3 paragraphs, STAR structure but written conversationally, not as headers
+- Design / scenario / architecture questions: 3–4 paragraphs max`,
+
+  tight: `## Voice & Delivery
+Be direct and compressed. Answer like you have 90 seconds on the clock.
+- Get to the point in the first sentence — no setup, no context, no framing
+- One concrete example, one metric, one clear takeaway — then stop
+- Short sentences. Cut any sentence that doesn't add new information
+- No filler transitions ("Additionally...", "Furthermore...", "It's important to note...")
+- If you would say it in a deck, cut it
+
+## Response length
+- All question types: 2–3 short paragraphs maximum, often just 2
+- Opener questions: 1 tight paragraph`,
+
+  exec: `## Voice & Delivery
+Polished and precise — the register you'd use presenting to a board or in a PE diligence conversation.
+- Lead with a clear thesis in the first sentence, support it cleanly, close with the strategic implication
+- Still first person and direct, but fewer contractions and more complete sentences
+- Framework references are fine if immediately grounded in plain terms right after
+- No casual hedges ("honestly", "the thing is") — confident and declarative throughout
+- The logic flow must be airtight; each paragraph earns the next
+
+## Response length
+- Behavioral questions: 2–3 paragraphs, STAR structure implied but not labelled
+- Design / scenario questions: 3–4 paragraphs, structured but not templated
+- Opener questions: 1–2 paragraphs, precise and specific`
+}
+
 // Persistent settings store
 const store = new Store<{
   apiKey: string
   model: string
   resume: string
   openaiApiKey: string
+  toneMode: ToneMode
+  knowledgeItems: KnowledgeItem[]
+  lastJobContext: JobContext | null
+  userProfile: UserProfile
 }>()
 
 let teleprompterWindow: BrowserWindow | null = null
@@ -108,15 +200,58 @@ app.whenReady().then(() => {
       apiKey: store.get('apiKey', ''),
       model: store.get('model', 'claude-sonnet-4-6'),
       resume: store.get('resume', ''),
-      openaiApiKey: store.get('openaiApiKey', '')
+      openaiApiKey: store.get('openaiApiKey', ''),
+      toneMode: store.get('toneMode', 'conversational')
     }
   })
 
-  ipcMain.handle('settings:save', (_event, settings: { apiKey: string; model: string; resume: string; openaiApiKey: string }) => {
+  ipcMain.handle('settings:save', (_event, settings: { apiKey: string; model: string; resume: string; openaiApiKey: string; toneMode: ToneMode }) => {
     store.set('apiKey', settings.apiKey)
     store.set('model', settings.model)
     store.set('resume', settings.resume ?? '')
     store.set('openaiApiKey', settings.openaiApiKey ?? '')
+    store.set('toneMode', settings.toneMode ?? 'conversational')
+    return true
+  })
+
+  // ── IPC: Job context persistence ──────────────────────────────────────────
+  ipcMain.handle('job:get-saved', () => {
+    return store.get('lastJobContext', null)
+  })
+
+  ipcMain.handle('job:save-context', (_event, ctx: JobContext) => {
+    store.set('lastJobContext', ctx)
+    return true
+  })
+
+  // ── IPC: Knowledge Base ────────────────────────────────────────────────────
+  ipcMain.handle('knowledge:get-all', () => {
+    return store.get('knowledgeItems', [])
+  })
+
+  ipcMain.handle('knowledge:upsert', (_event, item: KnowledgeItem) => {
+    const items = store.get('knowledgeItems', [])
+    const idx = items.findIndex((i) => i.id === item.id)
+    if (idx >= 0) {
+      items[idx] = item
+    } else {
+      items.push(item)
+    }
+    store.set('knowledgeItems', items)
+    return true
+  })
+
+  ipcMain.handle('knowledge:delete', (_event, id: string) => {
+    const items = store.get('knowledgeItems', [])
+    store.set('knowledgeItems', items.filter((i) => i.id !== id))
+    return true
+  })
+
+  // ── IPC: User Profile ──────────────────────────────────────────────────────
+  ipcMain.handle('profile:get', () => store.get('userProfile', DEFAULT_PROFILE))
+
+  ipcMain.handle('profile:save', (_event, profile: UserProfile) => {
+    store.set('userProfile', profile)
     return true
   })
 
@@ -189,6 +324,7 @@ app.whenReady().then(() => {
     ) => {
       const apiKey = store.get('apiKey', '')
       const model = store.get('model', 'claude-sonnet-4-6')
+      const toneMode = store.get('toneMode', 'conversational') as ToneMode
 
       if (!apiKey) {
         if (!event.sender.isDestroyed()) {
@@ -207,7 +343,7 @@ app.whenReady().then(() => {
         })
 
         const candidateSection = payload.resume?.trim()
-          ? `\n## Candidate Background\n${payload.resume.trim()}\n\nWhen writing suggestedResponse: where naturally relevant, draw on 1-2 specific details from the candidate's background — actual companies, measurable outcomes, named tools. If the candidate's background doesn't offer a relevant anchor for this question, frame the response in first person without fabricating specifics.\n`
+          ? `\n## Candidate Background\n${payload.resume.trim()}\n\nUse this background to make the suggestedResponse feel personal and grounded. Reference a real company, project, or outcome when it fits naturally — the way you'd mention it in conversation, not as a name-drop. If nothing from the background fits this particular question, just write in first person without forcing it.\n`
           : ''
 
         const staticPart = `You are an expert RevOps interview coach preparing a candidate for a Senior Director / VP Revenue Operations role at a late-stage startup.
@@ -232,43 +368,33 @@ Classify the question into EXACTLY ONE of these 14 competencies — use the exac
 - Prioritization & Portfolio Management
 - KPIs & Metrics
 
-## Answer Framing Checklist (apply to every suggestedResponse)
-Structure answers using these 5 steps, in order:
-1. Lead with strategic framing — why this matters at the business level
-2. Describe the system or architecture designed (or would design)
-3. Anchor to a specific metric or measurable outcome
-4. Name the tools or data sources most relevant to the role
-5. Close with the compounding or long-term value created
+## Substance to include in suggestedResponse (use what fits — don't force all)
+- A specific example, metric, or outcome that grounds the answer in reality
+- The "why it matters" at the business level, stated simply
+- The actual approach or system, described in plain terms
+- A relevant tool or data source, mentioned naturally (not listed)
+- What you'd do differently or what you learned
 
-## Positioning Anchors (weave into every response)
-- Systems thinking: connect every answer to the broader revenue architecture
-- Revenue architecture: structural design, not just tactical fixes
-- Yield over volume: PAM not TAM; quality engagement not spray-and-pray
-- Data before AI: the foundation must be right before the acceleration layer
-- GTM as product: what is the feedback loop and iteration cycle?
-- Prioritization discipline: what are we explicitly NOT doing, and why?
-
-## Response Length
-- Opener/intro questions ("Tell me about yourself", "Why this role"): 1–2 paragraphs
-- Behavioral questions: 2–3 paragraphs in STAR format
-- Design / scenario / architecture questions: 3–4 paragraphs
-
-## Tone
-Senior Director or VP level. Strategic. Structured. Outcome-oriented. Measured. No hype.
+## Positioning philosophy (draw on 1-2 that naturally fit — don't stack them all)
+- Systems over tactics: design the architecture, not just the fix
+- Yield over volume: PAM not TAM; quality motion not spray-and-pray
+- Data before AI: get the foundation right before adding intelligence
+- Prioritization discipline: being explicit about what you're NOT doing is a sign of maturity
 
 Format your response as JSON:
 {
   "competency": "string - one of the 14 competency labels above",
-  "keyPoints": ["string array - 3-5 bullet points to hit"],
-  "suggestedResponse": "string - a full suggested answer following the 5-step Answer Framing Checklist",
-  "toolsToMention": ["string array - specific tools or platforms to name-drop for this role"],
-  "metricsToMention": ["string array - specific KPIs or metrics to cite"],
+  "keyPoints": ["string array - 3-5 plain-language bullet points, written as things to say not headers"],
+  "suggestedResponse": "string - a full suggested answer in the voice and length specified below",
+  "toolsToMention": ["string array - specific tools or platforms relevant to this answer"],
+  "metricsToMention": ["string array - specific KPIs or metrics worth citing"],
   "confidence": "high|medium|low - how well this question maps to RevOps"
 }`
 
         const dynamicPart = `## Target Job Description
 ${payload.jobDescription || 'No specific job description provided. Give general RevOps best-practice answers.'}
-${candidateSection}`
+${candidateSection}
+${TONE_INSTRUCTIONS[toneMode]}`
 
         const stream = client.messages.stream({
           model,
@@ -444,6 +570,46 @@ Return ONLY a valid JSON array. No preamble, no trailing explanation, no markdow
         }>
 
         return { success: true, questions: rawQuestions }
+      } catch (err) {
+        return { success: false, error: String(err) }
+      }
+    }
+  )
+
+  // ── IPC: Generate follow-up questions ────────────────────────────────────
+  ipcMain.handle(
+    'claude:followup-questions',
+    async (
+      _event,
+      payload: { question: string; suggestedResponse: string; jobDescription: string }
+    ) => {
+      const apiKey = store.get('apiKey', '')
+      if (!apiKey) return { success: false, error: 'No API key configured.' }
+
+      try {
+        const client = new Anthropic({ apiKey })
+        const message = await client.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 400,
+          system: `You are an expert RevOps interview coach. Given an interview question and the candidate's planned response, identify exactly 2-3 sharp follow-up questions a skilled interviewer would ask to probe depth, test assumptions, or challenge claims.
+
+Return ONLY a valid JSON array of strings. No preamble, no explanation, no markdown:
+["Follow-up question 1", "Follow-up question 2", "Follow-up question 3"]`,
+          messages: [
+            {
+              role: 'user',
+              content: `Job context: ${payload.jobDescription}\n\nInterview question: "${payload.question}"\n\nCandidate's planned response: "${payload.suggestedResponse}"\n\nWhat follow-up questions would the interviewer ask?`
+            }
+          ]
+        })
+
+        const content = message.content[0]
+        if (content.type !== 'text') return { success: false, error: 'Unexpected response type.' }
+
+        const match = content.text.match(/\[[\s\S]*\]/)
+        if (!match) return { success: false, error: 'Could not parse follow-up questions.' }
+
+        return { success: true, questions: JSON.parse(match[0]) as string[] }
       } catch (err) {
         return { success: false, error: String(err) }
       }
