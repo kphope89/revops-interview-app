@@ -73,6 +73,8 @@ export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
   const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE)
   const [profileSaved, setProfileSaved] = useState(false)
   const [resumeExpanded, setResumeExpanded] = useState(false)
+  const [parsing, setParsing] = useState(false)
+  const [parseError, setParseError] = useState<string | null>(null)
 
   // Config tab state
   const [apiKey, setApiKey] = useState(settings.apiKey)
@@ -131,6 +133,35 @@ export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
     await window.electronAPI.saveProfile(profile)
     setProfileSaved(true)
     setTimeout(() => setProfileSaved(false), 2000)
+  }
+
+  const handleParseResume = async () => {
+    if (!profile.resume.trim()) return
+    setParsing(true)
+    setParseError(null)
+    try {
+      const result = await window.electronAPI.parseResume(profile.resume)
+      if (!result.success || !result.parsed) {
+        setParseError(result.error ?? 'Could not parse resume.')
+        return
+      }
+      const p = result.parsed
+      // Only fill in blank fields — never overwrite something the user typed
+      setProfile((prev) => ({
+        ...prev,
+        name: prev.name || p.name || prev.name,
+        currentTitle: prev.currentTitle || p.currentTitle || prev.currentTitle,
+        currentCompany: prev.currentCompany || p.currentCompany || prev.currentCompany,
+        yearsExperience: prev.yearsExperience || p.yearsExperience || prev.yearsExperience,
+        topStrengths: prev.topStrengths.length > 0 ? prev.topStrengths : (p.topStrengths ?? prev.topStrengths),
+        signatureMetrics: prev.signatureMetrics.map((m, i) => m || (p.signatureMetrics?.[i] ?? '')),
+        differentiator: prev.differentiator || p.differentiator || prev.differentiator,
+      }))
+    } catch (e) {
+      setParseError(String(e))
+    } finally {
+      setParsing(false)
+    }
   }
 
   const setProfileField = <K extends keyof UserProfile>(field: K, value: UserProfile[K]) => {
@@ -467,9 +498,37 @@ export default function SettingsScreen({ settings, onSave, onCancel }: Props) {
                       value={profile.resume}
                       onChange={(e) => setProfileField('resume', e.target.value)}
                     />
-                    <p className="text-xs text-slate-500 mt-1">
-                      Stored locally. Used to personalize coaching responses and generate predicted questions.
-                    </p>
+                    <div className="flex items-center justify-between mt-2">
+                      <p className="text-xs text-slate-500">
+                        Stored locally. Used to personalize coaching responses.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleParseResume}
+                        disabled={parsing || !profile.resume.trim()}
+                        className="text-xs px-3 py-1.5 rounded-lg bg-blue-600/15 border border-blue-500/30 text-blue-300 hover:bg-blue-600/25 hover:text-blue-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center gap-1.5 flex-shrink-0"
+                      >
+                        {parsing ? (
+                          <>
+                            <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                            </svg>
+                            Parsing…
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            </svg>
+                            Auto-fill from resume
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    {parseError && (
+                      <p className="text-xs text-red-400 mt-1">{parseError}</p>
+                    )}
                   </>
                 )}
               </div>

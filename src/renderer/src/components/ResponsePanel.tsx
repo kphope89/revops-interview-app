@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AnalyzedQuestion, JobContext, PrepQuestionsState } from '../types'
+import { AnalyzedQuestion, JobContext, PrepKit, PrepQuestionsState } from '../types'
 import { extractStreamingResponse } from '../utils/extractStreamingResponse'
 
 interface Props {
@@ -15,6 +15,7 @@ interface Props {
   selectedQuestion: AnalyzedQuestion | null
   onReanalyze: (questionId: string, question: string) => void
   onGenerateFollowUps: (questionId: string) => void
+  prepKit: PrepKit | null
 }
 
 export default function ResponsePanel({
@@ -28,10 +29,12 @@ export default function ResponsePanel({
   onTeleprompterToggle,
   selectedQuestion,
   onReanalyze,
-  onGenerateFollowUps
+  onGenerateFollowUps,
+  prepKit
 }: Props) {
   const [copied, setCopied] = useState(false)
   const [prepOpen, setPrepOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<'questions' | 'kit'>('questions')
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text)
@@ -93,7 +96,7 @@ export default function ResponsePanel({
             {questions.map((q, i) => (
               <button
                 key={q.id}
-                onClick={() => onSelectQuestion(q.id)}
+                onClick={() => { onSelectQuestion(q.id); setActiveTab('questions') }}
                 className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-150 ${
                   q.id === selectedId
                     ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/20'
@@ -108,6 +111,23 @@ export default function ResponsePanel({
                 Q{i + 1}
               </button>
             ))}
+
+            {/* Kit tab */}
+            {prepKit && (
+              <button
+                onClick={() => setActiveTab((t) => t === 'kit' ? 'questions' : 'kit')}
+                className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-150 ${
+                  activeTab === 'kit'
+                    ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/20'
+                    : 'text-slate-500 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Kit
+              </button>
+            )}
 
             {/* Prep questions dropdown */}
             {(prepState.status === 'ready' || prepState.status === 'loading') && (
@@ -165,7 +185,9 @@ export default function ResponsePanel({
 
           {/* Coaching area */}
           <div className="flex-1 overflow-y-auto">
-            {selected ? (
+            {activeTab === 'kit' && prepKit ? (
+              <PrepKitPanel kit={prepKit} />
+            ) : selected ? (
               <TeleprompterCoaching
                 question={selected}
                 onCopy={handleCopy}
@@ -484,6 +506,89 @@ function PrepQuestionsSection({
             )}
           </div>
         ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Prep Kit Panel (compact mid-interview reference) ─────────────────────────
+function PrepKitPanel({ kit }: { kit: PrepKit }) {
+  const [narrativeExpanded, setNarrativeExpanded] = useState(false)
+
+  return (
+    <div className="p-5 space-y-6">
+      {/* Talking Points — most immediately useful */}
+      <div>
+        <p className="text-[11px] font-bold uppercase tracking-widest text-slate-600 mb-3">Key Messages</p>
+        <div className="space-y-2">
+          {kit.talkingPoints.map((point, i) => (
+            <div key={i} className="flex gap-3 p-3 rounded-xl bg-slate-900/50 border-l-2 border-blue-500/50 border border-slate-800/50">
+              <span className="flex-shrink-0 w-4 h-4 rounded-full bg-blue-600/20 text-blue-400 text-[10px] font-bold flex items-center justify-center border border-blue-500/20">
+                {i + 1}
+              </span>
+              <p className="text-xs text-slate-300 leading-relaxed">{point}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Hot Competencies */}
+      <div>
+        <p className="text-[11px] font-bold uppercase tracking-widest text-slate-600 mb-3">Hot Competencies</p>
+        <div className="space-y-2">
+          {kit.hotCompetencies.map((hc, i) => (
+            <div key={i} className="p-3 rounded-xl bg-slate-900/40 border border-slate-800/50">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">
+                {hc.label}
+              </span>
+              <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{hc.coachingNote}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Narrative — collapsible */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-slate-600">Narrative</p>
+          <button
+            onClick={() => setNarrativeExpanded((v) => !v)}
+            className="text-xs text-slate-600 hover:text-slate-300 transition-colors"
+          >
+            {narrativeExpanded ? 'Collapse' : 'Expand'}
+          </button>
+        </div>
+        <p className={`text-xs text-slate-400 leading-relaxed whitespace-pre-wrap ${narrativeExpanded ? '' : 'line-clamp-3'}`}>
+          {kit.narrative}
+        </p>
+      </div>
+
+      {/* Questions to Ask */}
+      <div>
+        <p className="text-[11px] font-bold uppercase tracking-widest text-slate-600 mb-3">Questions to Ask</p>
+        <div className="space-y-1.5">
+          {kit.questionsToAsk.map((q, i) => (
+            <div key={i} className="flex gap-2 py-1.5">
+              <span className="flex-shrink-0 text-[10px] font-bold text-slate-700 mt-0.5">{i + 1}.</span>
+              <p className="text-xs text-slate-400 leading-relaxed">{q}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Power Phrases */}
+      <div>
+        <p className="text-[11px] font-bold uppercase tracking-widest text-slate-600 mb-3">Power Phrases</p>
+        <div className="flex flex-wrap gap-2">
+          {kit.powerPhrases.map((phrase, i) => {
+            const cleanPhrase = phrase.replace(/^Phrase:\s*/i, '').split(' — ')[0].trim()
+            return (
+              <span key={i} className="text-xs font-medium text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-lg">
+                {cleanPhrase}
+              </span>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

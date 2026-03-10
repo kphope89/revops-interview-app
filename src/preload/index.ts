@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // User profile
   getProfile: () => ipcRenderer.invoke('profile:get'),
   saveProfile: (profile: unknown) => ipcRenderer.invoke('profile:save', profile),
+  parseResume: (resume: string) => ipcRenderer.invoke('profile:parse-resume', resume),
 
   // Knowledge base
   getKnowledgeItems: () => ipcRenderer.invoke('knowledge:get-all'),
@@ -62,6 +63,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Follow-up question prediction
   generateFollowUpQuestions: (payload: unknown) =>
     ipcRenderer.invoke('claude:followup-questions', payload),
+
+  generatePrepKit: (payload: unknown) => ipcRenderer.invoke('claude:prep-kit', payload),
 
   // Teleprompter window control (called from main renderer)
   openTeleprompter: (data: unknown) => ipcRenderer.send('teleprompter:open', data),

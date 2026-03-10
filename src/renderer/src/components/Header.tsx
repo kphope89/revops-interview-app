@@ -40,7 +40,10 @@ export default function Header({ screen, onSettings, onBack, hasApiKey }: Props)
           </h1>
           <p className="text-[10px] leading-tight font-medium"
             style={{ color: screen === 'interview' ? '#34d399' : '#475569' }}>
-            {screen === 'interview' ? 'Live Session' : screen === 'settings' ? 'Settings' : 'AI Coach'}
+            {screen === 'interview' ? 'Live Session'
+            : screen === 'settings' ? 'Settings'
+            : screen === 'prep' ? 'Prep Kit'
+            : 'AI Coach'}
           </p>
         </div>
       </div>
@@ -51,7 +54,7 @@ export default function Header({ screen, onSettings, onBack, hasApiKey }: Props)
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
         {/* API key warning */}
-        {!hasApiKey && screen !== 'settings' && (
+        {!hasApiKey && screen !== 'settings' && screen !== 'prep' && (
           <div className="flex items-center gap-1.5 text-xs text-amber-400 bg-amber-400/8 border border-amber-400/20 px-2.5 py-1 rounded-full">
             <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd"/>
@@ -74,7 +77,7 @@ export default function Header({ screen, onSettings, onBack, hasApiKey }: Props)
         )}
 
         {/* Settings button */}
-        {screen !== 'settings' && (
+        {screen !== 'settings' && screen !== 'prep' && (
           <button
             onClick={onSettings}
             className="flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-slate-100 bg-slate-800/60 hover:bg-slate-700/60 border border-slate-700/40 hover:border-slate-600 px-3 py-1.5 rounded-xl transition-all duration-150"
@@ -88,8 +91,8 @@ export default function Header({ screen, onSettings, onBack, hasApiKey }: Props)
           </button>
         )}
 
-        {/* Back button on settings */}
-        {screen === 'settings' && (
+        {/* Back button on settings or prep */}
+        {(screen === 'settings' || screen === 'prep') && (
           <button
             onClick={onBack}
             className="flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-slate-100 bg-slate-800/60 hover:bg-slate-700/60 border border-slate-700/40 hover:border-slate-600 px-3 py-1.5 rounded-xl transition-all duration-150"

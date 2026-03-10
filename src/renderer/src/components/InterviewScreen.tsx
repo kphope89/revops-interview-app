@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { JobContext, Settings, AnalyzedQuestion, TranscriptEntry, QuestionAnalysis, PrepQuestionsState, KnowledgeItem, UserProfile } from '../types'
+import { JobContext, Settings, AnalyzedQuestion, TranscriptEntry, QuestionAnalysis, PrepQuestionsState, KnowledgeItem, UserProfile, PrepKit } from '../types'
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
 import { getKnowledgeContext, buildUserKnowledgeSection } from '../data/revops-knowledge'
 import { buildProfileSection } from '../data/buildProfileSection'
@@ -25,11 +25,12 @@ interface Props {
   jobContext: JobContext
   settings: Settings
   onEnd: () => void
+  prepKit: PrepKit | null
 }
 
 const MIN_WORDS_TO_ANALYZE = 4
 
-export default function InterviewScreen({ jobContext, settings }: Props) {
+export default function InterviewScreen({ jobContext, settings, prepKit }: Props) {
   const { status, finalTranscripts, error, arm, startHold, stopHold, disarm, clearTranscripts } =
     useSpeechRecognition()
 
@@ -500,6 +501,7 @@ export default function InterviewScreen({ jobContext, settings }: Props) {
           selectedQuestion={selectedQuestion}
           onReanalyze={handleReanalyze}
           onGenerateFollowUps={handleGenerateFollowUps}
+          prepKit={prepKit}
         />
       </div>
     </div>
