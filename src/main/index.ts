@@ -1,0 +1,827 @@
+import { app, shell, BrowserWindow, ipcMain, session } from 'electron'
+import { join } from 'path'
+import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import Store from 'electron-store'
+import Anthropic from '@anthropic-ai/sdk'
+import OpenAI from 'openai'
+import { createReadStream } from 'fs'
+import { writeFile, unlink } from 'fs/promises'
+import { tmpdir } from 'os'
+
+interface KnowledgeItem {
+  id: string
+  title: string
+  type: 'project' | 'achievement' | 'framework' | 'brief'
+  content: string
+  createdAt: string
+}
+
+interface JobContext {
+  title: string
+  company: string
+  description: string
+  url?: string
+}
+
+interface UserProfile {
+  name: string
+  currentTitle: string
+  currentCompany: string
+  yearsExperience: string
+  targetTitle: string
+  targetStage: string
+  targetIndustry: string
+  lookingBecause: string
+  topStrengths: string[]
+  signatureMetrics: string[]
+  differentiator: string
+  resume: string
+}
+
+const DEFAULT_PROFILE: UserProfile = {
+  name: '',
+  currentTitle: '',
+  currentCompany: '',
+  yearsExperience: '',
+  targetTitle: '',
+  targetStage: '',
+  targetIndustry: '',
+  lookingBecause: '',
+  topStrengths: [],
+  signatureMetrics: ['', '', ''],
+  differentiator: '',
+  resume: ''
+}
+
+type ToneMode = 'conversational' | 'tight' | 'exec'
+
+const TONE_INSTRUCTIONS: Record<ToneMode, string> = {
+  conversational: `## Voice & Delivery
+Write as if you're speaking in the room, not writing a slide deck.
+- Use contractions naturally (I've, we'd, it's, that's)
+- Vary sentence length — short punchy sentences mixed with more expansive ones
+- Lead with the most interesting thing, not with setup or context-framing
+- It's OK to say "honestly" or "what I've found is" — these signal authenticity
+- First person throughout; avoid jargon stacking
+- Don't start every paragraph with a strategic frame — start with the thing that happened, or the problem, or a direct opinion
+
+## Response length
+- Opener questions ("Tell me about yourself", "Why this role"): 1–2 short paragraphs, direct and specific
+- Behavioral questions: 2–3 paragraphs, STAR structure but written conversationally, not as headers
+- Design / scenario / architecture questions: 3–4 paragraphs max`,
+
+  tight: `## Voice & Delivery
+Be direct and compressed. Answer like you have 90 seconds on the clock.
+- Get to the point in the first sentence — no setup, no context, no framing
+- One concrete example, one metric, one clear takeaway — then stop
+- Short sentences. Cut any sentence that doesn't add new information
+- No filler transitions ("Additionally...", "Furthermore...", "It's important to note...")
+- If you would say it in a deck, cut it
+
+## Response length
+- All question types: 2–3 short paragraphs maximum, often just 2
+- Opener questions: 1 tight paragraph`,
+
+  exec: `## Voice & Delivery
+Polished and precise — the register you'd use presenting to a board or in a PE diligence conversation.
+- Lead with a clear thesis in the first sentence, support it cleanly, close with the strategic implication
+- Still first person and direct, but fewer contractions and more complete sentences
+- Framework references are fine if immediately grounded in plain terms right after
+- No casual hedges ("honestly", "the thing is") — confident and declarative throughout
+- The logic flow must be airtight; each paragraph earns the next
+
+## Response length
+- Behavioral questions: 2–3 paragraphs, STAR structure implied but not labelled
+- Design / scenario questions: 3–4 paragraphs, structured but not templated
+- Opener questions: 1–2 paragraphs, precise and specific`
+}
+
+// Persistent settings store
+const store = new Store<{
+  apiKey: string
+  model: string
+  resume: string
+  openaiApiKey: string
+  toneMode: ToneMode
+  knowledgeItems: KnowledgeItem[]
+  lastJobContext: JobContext | null
+  userProfile: UserProfile
+}>()
+
+let teleprompterWindow: BrowserWindow | null = null
+
+function createTeleprompterWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 440,
+    height: 320,
+    minWidth: 300,
+    minHeight: 180,
+    frame: false,
+    transparent: true,
+    hasShadow: true,
+    resizable: true,
+    movable: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  win.setAlwaysOnTop(true, 'floating')
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/teleprompter.html`)
+  } else {
+    win.loadFile(join(__dirname, '../renderer/teleprompter.html'))
+  }
+
+  win.on('closed', () => { teleprompterWindow = null })
+  return win
+}
+
+function createWindow(): void {
+  const mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 1100,
+    minHeight: 700,
+    show: false,
+    autoHideMenuBar: true,
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#0f172a',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: false  // required for Web Speech API to reach Google's speech servers
+    }
+  })
+
+  mainWindow.on('ready-to-show', () => {
+    mainWindow.show()
+  })
+
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+
+  // Grant microphone permission automatically in dev
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    if (permission === 'media') {
+      callback(true)
+    } else {
+      callback(false)
+    }
+  })
+
+  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+app.whenReady().then(() => {
+  electronApp.setAppUserModelId('com.revops.interview-assistant')
+
+  app.on('browser-window-created', (_, window) => {
+    optimizer.watchWindowShortcuts(window)
+  })
+
+  // ── IPC: Settings ──────────────────────────────────────────────────────────
+  ipcMain.handle('settings:get', () => {
+    return {
+      apiKey: store.get('apiKey', ''),
+      model: store.get('model', 'claude-sonnet-4-6'),
+      resume: store.get('resume', ''),
+      openaiApiKey: store.get('openaiApiKey', ''),
+      toneMode: store.get('toneMode', 'conversational')
+    }
+  })
+
+  ipcMain.handle('settings:save', (_event, settings: { apiKey: string; model: string; resume: string; openaiApiKey: string; toneMode: ToneMode }) => {
+    store.set('apiKey', settings.apiKey)
+    store.set('model', settings.model)
+    store.set('resume', settings.resume ?? '')
+    store.set('openaiApiKey', settings.openaiApiKey ?? '')
+    store.set('toneMode', settings.toneMode ?? 'conversational')
+    return true
+  })
+
+  // ── IPC: Job context persistence ──────────────────────────────────────────
+  ipcMain.handle('job:get-saved', () => {
+    return store.get('lastJobContext', null)
+  })
+
+  ipcMain.handle('job:save-context', (_event, ctx: JobContext) => {
+    store.set('lastJobContext', ctx)
+    return true
+  })
+
+  // ── IPC: Knowledge Base ────────────────────────────────────────────────────
+  ipcMain.handle('knowledge:get-all', () => {
+    return store.get('knowledgeItems', [])
+  })
+
+  ipcMain.handle('knowledge:upsert', (_event, item: KnowledgeItem) => {
+    const items = store.get('knowledgeItems', [])
+    const idx = items.findIndex((i) => i.id === item.id)
+    if (idx >= 0) {
+      items[idx] = item
+    } else {
+      items.push(item)
+    }
+    store.set('knowledgeItems', items)
+    return true
+  })
+
+  ipcMain.handle('knowledge:delete', (_event, id: string) => {
+    const items = store.get('knowledgeItems', [])
+    store.set('knowledgeItems', items.filter((i) => i.id !== id))
+    return true
+  })
+
+  // ── IPC: User Profile ──────────────────────────────────────────────────────
+  ipcMain.handle('profile:get', () => store.get('userProfile', DEFAULT_PROFILE))
+
+  ipcMain.handle('profile:save', (_event, profile: UserProfile) => {
+    store.set('userProfile', profile)
+    return true
+  })
+
+  ipcMain.handle('profile:parse-resume', async (_event, resume: string) => {
+    const apiKey = store.get('apiKey', '')
+    if (!apiKey) return { success: false, error: 'No API key configured.' }
+    if (!resume?.trim()) return { success: false, error: 'No resume text provided.' }
+
+    try {
+      const client = new Anthropic({ apiKey })
+      const message = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 600,
+        system: `You extract structured RevOps career data from a resume or professional summary. Return ONLY valid JSON — no preamble, no explanation, no markdown fences.
+
+Competency labels to use for topStrengths (pick the most relevant, max 5, use exact strings only):
+Revenue Strategy & GTM Planning | Sales Operations & Pipeline Management | Marketing Operations & Lead Management | Customer Success Operations | Data & Analytics | Technology Stack Management | Forecasting & Revenue Intelligence | Compensation & Quota Design | Process Design & Optimization | Cross-Functional Alignment | Change Management | AI-First RevOps Architecture | Prioritization & Portfolio Management | KPIs & Metrics
+
+Years experience buckets (use exact strings): "1-3 years" | "4-6 years" | "7-10 years" | "10+ years"
+
+Return this exact shape (omit a field or leave it empty string / empty array if not discernible):
+{
+  "name": "",
+  "currentTitle": "",
+  "currentCompany": "",
+  "yearsExperience": "",
+  "topStrengths": [],
+  "signatureMetrics": ["", "", ""],
+  "differentiator": ""
+}
+
+signatureMetrics: extract up to 3 specific, quantified achievements (e.g. "Reduced forecast error from 22% to 8% via Clari"). Leave as empty string if no metric available for that slot.`,
+        messages: [{ role: 'user', content: resume.trim() }]
+      })
+
+      const content = message.content[0]
+      if (content.type !== 'text') return { success: false, error: 'Unexpected response type.' }
+
+      const jsonMatch = content.text.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) return { success: false, error: 'Could not parse response.' }
+
+      const parsed = JSON.parse(jsonMatch[0])
+      // Ensure signatureMetrics is always length 3
+      if (!Array.isArray(parsed.signatureMetrics)) parsed.signatureMetrics = ['', '', '']
+      while (parsed.signatureMetrics.length < 3) parsed.signatureMetrics.push('')
+      parsed.signatureMetrics = parsed.signatureMetrics.slice(0, 3)
+
+      return { success: true, parsed }
+    } catch (err) {
+      return { success: false, error: String(err) }
+    }
+  })
+
+  // ── IPC: Teleprompter window ────────────────────────────────────────────────
+  ipcMain.on('teleprompter:open', (_event, questionData) => {
+    if (!teleprompterWindow || teleprompterWindow.isDestroyed()) {
+      teleprompterWindow = createTeleprompterWindow()
+    }
+    teleprompterWindow.show()
+    const sendQuestion = () => {
+      if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+        teleprompterWindow.webContents.send('teleprompter:question', questionData)
+      }
+    }
+    if (teleprompterWindow.webContents.isLoading()) {
+      teleprompterWindow.webContents.once('did-finish-load', sendQuestion)
+    } else {
+      sendQuestion()
+    }
+  })
+
+  ipcMain.on('teleprompter:close', () => {
+    teleprompterWindow?.hide()
+  })
+
+  ipcMain.on('teleprompter:update', (_event, questionData) => {
+    if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+      teleprompterWindow.webContents.send('teleprompter:question', questionData)
+    }
+  })
+
+  // ── IPC: Fetch job posting URL ─────────────────────────────────────────────
+  ipcMain.handle('job:fetch-url', async (_event, url: string) => {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const html = await response.text()
+      // Strip HTML tags for plain text
+      const text = html
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 8000)
+      return { success: true, text }
+    } catch (err) {
+      return { success: false, error: String(err) }
+    }
+  })
+
+  // ── IPC: Analyze question via Claude (streaming) ──────────────────────────
+  ipcMain.on(
+    'claude:analyze-stream',
+    async (
+      event,
+      payload: {
+        requestId: string
+        question: string
+        jobDescription: string
+        knowledgeContext: string
+        conversationHistory: string
+        resume: string
+      }
+    ) => {
+      const apiKey = store.get('apiKey', '')
+      const model = store.get('model', 'claude-sonnet-4-6')
+      const toneMode = store.get('toneMode', 'conversational') as ToneMode
+
+      if (!apiKey) {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('claude:stream-error', {
+            requestId: payload.requestId,
+            error: 'No API key configured. Please add your Anthropic API key in Settings.'
+          })
+        }
+        return
+      }
+
+      try {
+        const client = new Anthropic({
+          apiKey,
+          defaultHeaders: { 'anthropic-beta': 'prompt-caching-2024-07-31' }
+        })
+
+        const candidateSection = payload.resume?.trim()
+          ? `\n## Candidate Background\n${payload.resume.trim()}\n\nUse this background to make the suggestedResponse feel personal and grounded. Reference a real company, project, or outcome when it fits naturally — the way you'd mention it in conversation, not as a name-drop. If nothing from the background fits this particular question, just write in first person without forcing it.\n`
+          : ''
+
+        const staticPart = `You are an expert RevOps interview coach preparing a candidate for a Senior Director / VP Revenue Operations role at a late-stage startup.
+
+## RevOps Knowledge Base
+${payload.knowledgeContext}
+
+## Competency Classification
+Classify the question into EXACTLY ONE of these 14 competencies — use the exact label string:
+- Revenue Strategy & GTM Planning
+- Sales Operations & Pipeline Management
+- Marketing Operations & Lead Management
+- Customer Success Operations
+- Data & Analytics
+- Technology Stack Management
+- Forecasting & Revenue Intelligence
+- Compensation & Quota Design
+- Process Design & Optimization
+- Cross-Functional Alignment
+- Change Management
+- AI-First RevOps Architecture
+- Prioritization & Portfolio Management
+- KPIs & Metrics
+
+## Substance to include in suggestedResponse (use what fits — don't force all)
+- A specific example, metric, or outcome that grounds the answer in reality
+- The "why it matters" at the business level, stated simply
+- The actual approach or system, described in plain terms
+- A relevant tool or data source, mentioned naturally (not listed)
+- What you'd do differently or what you learned
+
+## Positioning philosophy (draw on 1-2 that naturally fit — don't stack them all)
+- Systems over tactics: design the architecture, not just the fix
+- Yield over volume: PAM not TAM; quality motion not spray-and-pray
+- Data before AI: get the foundation right before adding intelligence
+- Prioritization discipline: being explicit about what you're NOT doing is a sign of maturity
+
+Format your response as JSON:
+{
+  "competency": "string - one of the 14 competency labels above",
+  "keyPoints": ["string array - 3-5 plain-language bullet points, written as things to say not headers"],
+  "suggestedResponse": "string - a full suggested answer in the voice and length specified below",
+  "toolsToMention": ["string array - specific tools or platforms relevant to this answer"],
+  "metricsToMention": ["string array - specific KPIs or metrics worth citing"],
+  "confidence": "high|medium|low - how well this question maps to RevOps"
+}`
+
+        const dynamicPart = `## Target Job Description
+${payload.jobDescription || 'No specific job description provided. Give general RevOps best-practice answers.'}
+${candidateSection}
+${TONE_INSTRUCTIONS[toneMode]}`
+
+        const stream = client.messages.stream({
+          model,
+          max_tokens: 1500,
+          system: [
+            { type: 'text', text: staticPart, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: dynamicPart }
+          ],
+          messages: [
+            {
+              role: 'user',
+              content: `Interview question detected: "${payload.question}"\n\nConversation context:\n${payload.conversationHistory || 'Start of interview'}\n\nProvide coaching advice for this question.`
+            }
+          ]
+        })
+
+        let fullText = ''
+        stream.on('text', (delta) => {
+          fullText += delta
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('claude:stream-chunk', { requestId: payload.requestId, delta })
+          }
+          if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+            teleprompterWindow.webContents.send('teleprompter:chunk', { requestId: payload.requestId, delta })
+          }
+        })
+
+        await stream.done()
+
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('claude:stream-done', { requestId: payload.requestId, fullText })
+        }
+        if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+          teleprompterWindow.webContents.send('teleprompter:done', { requestId: payload.requestId, fullText })
+        }
+      } catch (err) {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('claude:stream-error', { requestId: payload.requestId, error: String(err) })
+        }
+        if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+          teleprompterWindow.webContents.send('teleprompter:error', { requestId: payload.requestId, error: String(err) })
+        }
+      }
+    }
+  )
+
+  // ── IPC: Detect if transcript contains a question ─────────────────────────
+  ipcMain.handle(
+    'claude:detect-question',
+    async (
+      _event,
+      payload: { transcript: string; previousTranscript: string }
+    ) => {
+      const apiKey = store.get('apiKey', '')
+      const model = 'claude-haiku-4-5-20251001'
+
+      if (!apiKey) return { success: true, data: { isQuestion: false } }
+
+      try {
+        const client = new Anthropic({ apiKey })
+
+        const message = await client.messages.create({
+          model,
+          max_tokens: 200,
+          system: `You detect interview questions in a live Revenue Operations (RevOps) interview transcript.
+
+The candidate is interviewing for a Senior Director or VP RevOps role. The interviewer may ask direct questions OR use implicit prompts. Flag ALL of the following as questions worth analyzing:
+- Direct questions ending in "?" ("How do you approach territory design?")
+- Implicit prompts: "Tell me about...", "Walk me through...", "Describe a time when...", "Talk to me about your experience with..."
+- Topic invitations: "Let's talk about your forecasting approach", "I'd love to understand how you think about attribution"
+
+Do NOT flag as questions:
+- The candidate speaking (responding to an earlier question)
+- Filler speech, pleasantries, or small talk
+- Incomplete fragments under 5 words
+
+Return JSON only: {"isQuestion": boolean, "question": "the interview question being asked, cleaned up, or empty string", "type": "behavioral|technical|situational|general|not-a-question"}`,
+          messages: [
+            {
+              role: 'user',
+              content: `Previous: "${payload.previousTranscript}"\nNew text: "${payload.transcript}"\n\nIs this an interview question?`
+            }
+          ]
+        })
+
+        const content = message.content[0]
+        if (content.type !== 'text') return { success: true, data: { isQuestion: false } }
+
+        const jsonMatch = content.text.match(/\{[\s\S]*\}/)
+        if (!jsonMatch) return { success: true, data: { isQuestion: false } }
+
+        return { success: true, data: JSON.parse(jsonMatch[0]) }
+      } catch (err) {
+        return { success: false, error: String(err), data: { isQuestion: false } }
+      }
+    }
+  )
+
+  // ── IPC: Generate predicted prep questions from job description ────────────
+  ipcMain.handle(
+    'claude:prep-questions',
+    async (
+      _event,
+      payload: { jobDescription: string; knowledgeContext: string; resume: string }
+    ) => {
+      const apiKey = store.get('apiKey', '')
+      const model = store.get('model', 'claude-sonnet-4-6')
+
+      if (!apiKey) return { success: false, error: 'No API key configured.' }
+
+      try {
+        const client = new Anthropic({ apiKey })
+
+        const candidateSection = payload.resume?.trim()
+          ? `\n## Candidate Background\n${payload.resume.trim()}\n`
+          : ''
+
+        const systemPrompt = `You are a senior RevOps hiring manager and interview coach preparing a candidate for a specific interview.
+
+## RevOps Knowledge Base
+${payload.knowledgeContext}
+
+## Target Job Description
+${payload.jobDescription || 'No specific job description provided.'}
+${candidateSection}
+## Your Task
+Generate exactly 6 to 8 interview questions that are highly likely to be asked in this specific interview, given the job description and the candidate's background.
+
+## Question Selection Criteria
+- Prioritize questions that test competencies explicitly mentioned in the job description
+- Include at least one behavioral question (e.g., "Tell me about a time when...")
+- Include at least one design or scenario question (e.g., "How would you design...", "Walk me through how you'd approach...")
+- Include at least one metrics question directly tied to RevOps performance measurement
+- If candidate background is provided: include 1-2 questions that probe depth on their strongest claimed areas
+- Do NOT generate variations of the same question — cover distinct competency areas
+- Questions must be specific and realistic — not generic filler like "Tell me about yourself"
+
+## Competency Labels — use exact strings only:
+Revenue Strategy & GTM Planning | Sales Operations & Pipeline Management | Marketing Operations & Lead Management | Customer Success Operations | Data & Analytics | Technology Stack Management | Forecasting & Revenue Intelligence | Compensation & Quota Design | Process Design & Optimization | Cross-Functional Alignment | Change Management | AI-First RevOps Architecture | Prioritization & Portfolio Management | KPIs & Metrics
+
+## Output Format
+Return ONLY a valid JSON array. No preamble, no trailing explanation, no markdown code fences:
+[
+  {
+    "question": "The full interview question exactly as the interviewer would phrase it",
+    "competency": "Exact competency label from the list above",
+    "rationale": "One sentence explaining why this question is likely given this specific JD and candidate"
+  }
+]`
+
+        const message = await client.messages.create({
+          model,
+          max_tokens: 1200,
+          system: systemPrompt,
+          messages: [
+            {
+              role: 'user',
+              content: 'Generate the predicted interview questions for this role and candidate.'
+            }
+          ]
+        })
+
+        const content = message.content[0]
+        if (content.type !== 'text') return { success: false, error: 'Unexpected response type.' }
+
+        const jsonMatch = content.text.match(/\[[\s\S]*\]/)
+        if (!jsonMatch) return { success: false, error: 'Could not parse questions from response.' }
+
+        const rawQuestions = JSON.parse(jsonMatch[0]) as Array<{
+          question: string
+          competency: string
+          rationale: string
+        }>
+
+        return { success: true, questions: rawQuestions }
+      } catch (err) {
+        return { success: false, error: String(err) }
+      }
+    }
+  )
+
+  // ── IPC: Generate Prep Kit ────────────────────────────────────────────────
+  ipcMain.handle(
+    'claude:prep-kit',
+    async (
+      _event,
+      payload: {
+        jobDescription: string
+        knowledgeContext: string
+        resume: string
+        profileSection: string
+        spotlightItems?: Array<{ title: string; type: string; content: string }>
+      }
+    ) => {
+      const apiKey = store.get('apiKey', '')
+      const model = store.get('model', 'claude-sonnet-4-6')
+
+      if (!apiKey) return { success: false, error: 'No API key configured.' }
+
+      try {
+        const client = new Anthropic({ apiKey })
+
+        const candidateSection = payload.profileSection?.trim()
+          ? payload.profileSection.trim()
+          : payload.resume?.trim()
+          ? `## Candidate Background\n${payload.resume.trim()}`
+          : 'No candidate background provided.'
+
+        const spotlightSection = payload.spotlightItems?.length
+          ? `\n## Priority Stories — MUST Reference\nThe candidate specifically wants to feature these stories in this interview. You MUST weave them prominently into the narrative and at least 2 talking points. Reference the specific title, outcome, or metric from each:\n\n${
+              payload.spotlightItems
+                .map((s) => `### ${s.title} (${s.type})\n${s.content}`)
+                .join('\n\n')
+            }\n`
+          : ''
+
+        const systemPrompt = `You are an expert RevOps interview coach building a comprehensive Pre-Interview Prep Kit for a candidate.
+
+## RevOps Knowledge Base
+${payload.knowledgeContext}
+
+## Target Job
+${payload.jobDescription || 'No specific job description provided.'}
+
+## Candidate
+${candidateSection}
+${spotlightSection}
+## Competency Labels — use EXACT strings only:
+Revenue Strategy & GTM Planning | Sales Operations & Pipeline Management | Marketing Operations & Lead Management | Customer Success Operations | Data & Analytics | Technology Stack Management | Forecasting & Revenue Intelligence | Compensation & Quota Design | Process Design & Optimization | Cross-Functional Alignment | Change Management | AI-First RevOps Architecture | Prioritization & Portfolio Management | KPIs & Metrics
+
+## Your Task
+Generate a complete Pre-Interview Prep Kit with exactly these 5 sections:
+
+### 1. narrative
+2-3 paragraphs for "tell me about yourself," written as spoken prose tailored to this company and role. Open with the most interesting, specific thing about this candidate — NOT "I've been in RevOps for X years." Use first person. Reference the candidate's actual companies, metrics, and strengths naturally. Sound like a senior VP speaking in the room, not reading a slide deck.
+
+### 2. talkingPoints
+Exactly 3-5 non-negotiable messages to land regardless of what's asked. Each is a single declarative sentence at VP register — bold, specific, outcome-oriented. Reference the candidate's actual background where possible.
+
+### 3. questionsToAsk
+Exactly 5-7 sharp questions for the interviewer. Make them specific to THIS job description — not generic. They should signal strategic depth, reveal how the company operates, and demonstrate the candidate's seniority.
+
+### 4. hotCompetencies
+Top 3-5 of the 14 competency labels most likely to be tested given this specific job description. For each, write a 1-line coaching note specific to this candidate's background (e.g., "Lead with the Clari rebuild story"). Use exact competency label strings.
+
+### 5. powerPhrases
+Exactly 5-8 phrases or vocabulary patterns that signal seniority at VP / Senior Director level at this stage company. Format each as: "Phrase: [phrase] — [deployment note]"
+
+## Output
+Return ONLY valid JSON — no preamble, no markdown fences, no explanation:
+{
+  "narrative": "string with paragraphs separated by \\n\\n",
+  "talkingPoints": ["string", "string", "string"],
+  "questionsToAsk": ["string", "string", "string", "string", "string"],
+  "hotCompetencies": [{ "label": "exact competency label", "coachingNote": "1-line note" }],
+  "powerPhrases": ["Phrase: X — deployment note", "Phrase: Y — deployment note"]
+}`
+
+        const message = await client.messages.create({
+          model,
+          max_tokens: 2500,
+          system: systemPrompt,
+          messages: [
+            {
+              role: 'user',
+              content: 'Generate the complete Prep Kit for this candidate and role.'
+            }
+          ]
+        })
+
+        const content = message.content[0]
+        if (content.type !== 'text') return { success: false, error: 'Unexpected response type.' }
+
+        const jsonMatch = content.text.match(/\{[\s\S]*\}/)
+        if (!jsonMatch) return { success: false, error: 'Could not parse prep kit from response.' }
+
+        const kit = JSON.parse(jsonMatch[0])
+        return { success: true, kit }
+      } catch (err) {
+        return { success: false, error: String(err) }
+      }
+    }
+  )
+
+  // ── IPC: Generate follow-up questions ────────────────────────────────────
+  ipcMain.handle(
+    'claude:followup-questions',
+    async (
+      _event,
+      payload: { question: string; suggestedResponse: string; jobDescription: string }
+    ) => {
+      const apiKey = store.get('apiKey', '')
+      if (!apiKey) return { success: false, error: 'No API key configured.' }
+
+      try {
+        const client = new Anthropic({ apiKey })
+        const message = await client.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 400,
+          system: `You are an expert RevOps interview coach. Given an interview question and the candidate's planned response, identify exactly 2-3 sharp follow-up questions a skilled interviewer would ask to probe depth, test assumptions, or challenge claims.
+
+Return ONLY a valid JSON array of strings. No preamble, no explanation, no markdown:
+["Follow-up question 1", "Follow-up question 2", "Follow-up question 3"]`,
+          messages: [
+            {
+              role: 'user',
+              content: `Job context: ${payload.jobDescription}\n\nInterview question: "${payload.question}"\n\nCandidate's planned response: "${payload.suggestedResponse}"\n\nWhat follow-up questions would the interviewer ask?`
+            }
+          ]
+        })
+
+        const content = message.content[0]
+        if (content.type !== 'text') return { success: false, error: 'Unexpected response type.' }
+
+        const match = content.text.match(/\[[\s\S]*\]/)
+        if (!match) return { success: false, error: 'Could not parse follow-up questions.' }
+
+        return { success: true, questions: JSON.parse(match[0]) as string[] }
+      } catch (err) {
+        return { success: false, error: String(err) }
+      }
+    }
+  )
+
+  // ── IPC: Transcribe audio via OpenAI Whisper ──────────────────────────────
+  ipcMain.handle(
+    'stt:transcribe',
+    async (_event, payload: { base64Audio: string; mimeType: string }) => {
+      const openaiApiKey = store.get('openaiApiKey', '')
+      if (!openaiApiKey) {
+        return { success: false, error: 'No OpenAI API key configured. Add it in Settings.' }
+      }
+
+      const tmpPath = join(tmpdir(), `revops_${Date.now()}.webm`)
+      try {
+        const buffer = Buffer.from(payload.base64Audio, 'base64')
+        if (buffer.length < 500) return { success: true, text: '' }
+
+        await writeFile(tmpPath, buffer)
+
+        const openai = new OpenAI({ apiKey: openaiApiKey })
+        const transcription = await openai.audio.transcriptions.create({
+          model: 'whisper-1',
+          file: createReadStream(tmpPath),
+          language: 'en'
+        })
+
+        const text = transcription.text.trim()
+
+        // Whisper hallucinates these phrases for silence/noise — discard them
+        const WHISPER_HALLUCINATIONS = new Set([
+          'thank you.', 'thanks.', 'bye.', 'bye-bye.', 'bye!', 'bye bye.',
+          'thanks!', 'thank you!', 'you.', 'see you.', 'see you!',
+          'please subscribe.', 'subtitles by the amara.org community',
+        ])
+        const normalized = text.toLowerCase()
+        // Reject pure punctuation/whitespace or known hallucination phrases
+        if (/^[.\s!?,…\-]+$/.test(text) || WHISPER_HALLUCINATIONS.has(normalized)) {
+          return { success: true, text: '' }
+        }
+
+        return { success: true, text }
+      } catch (err) {
+        return { success: false, error: String(err) }
+      } finally {
+        await unlink(tmpPath).catch(() => {/* ignore if file wasn't created */})
+      }
+    }
+  )
+
+  createWindow()
+
+  app.on('activate', function () {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})
