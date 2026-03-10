@@ -11,10 +11,20 @@ export default function TeleprompterWindow() {
   const [fontSize, setFontSize] = useState(24)
   // 0 = off, 1 = slow, 2 = medium, 3 = fast
   const [scrollSpeed, setScrollSpeed] = useState(0)
+  const [mode, setMode] = useState<'prose' | 'bullets'>('prose')
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const scrollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const currentRequestIdRef = useRef<string | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const questionTimerIdRef = useRef<string | null>(null)
+
+  const formatElapsed = (seconds: number) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0')
+    const s = (seconds % 60).toString().padStart(2, '0')
+    return `${m}:${s}`
+  }
 
   // Register IPC listeners
   useEffect(() => {
@@ -23,6 +33,22 @@ export default function TeleprompterWindow() {
     api.onTeleprompterQuestion((data) => {
       const q = data as AnalyzedQuestion | null
       setQuestion(q)
+
+      // Timer: start/reset on new question, stop when cleared
+      if (q !== null && q.id !== questionTimerIdRef.current) {
+        questionTimerIdRef.current = q.id
+        setElapsedSeconds(0)
+        if (timerRef.current) clearInterval(timerRef.current)
+        timerRef.current = setInterval(() => setElapsedSeconds((s) => s + 1), 1000)
+      } else if (q === null) {
+        if (timerRef.current) {
+          clearInterval(timerRef.current)
+          timerRef.current = null
+        }
+        questionTimerIdRef.current = null
+        setElapsedSeconds(0)
+      }
+
       if (q?.analysis) {
         setAnalysis(q.analysis)
         setStreamingText('')
@@ -70,6 +96,7 @@ export default function TeleprompterWindow() {
 
     return () => {
       api.removeTeleprompterListeners()
+      if (timerRef.current) clearInterval(timerRef.current)
     }
   }, [])
 
@@ -96,6 +123,8 @@ export default function TeleprompterWindow() {
   const liveResponse = isStreaming ? extractStreamingResponse(streamingText) : null
   const responseText = analysis?.suggestedResponse ?? liveResponse ?? ''
   const questionText = question?.question ?? ''
+  const timerColor = elapsedSeconds >= 120 ? '#f59e0b' : '#475569'
+  const showBullets = mode === 'bullets' && !isStreaming && (analysis?.keyPoints?.length ?? 0) > 0
 
   return (
     <div
@@ -126,7 +155,7 @@ export default function TeleprompterWindow() {
           WebkitAppRegion: 'drag',
         } as React.CSSProperties}
       >
-        {/* Left: logo + label */}
+        {/* Left: logo + label + timer */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <div
             style={{
@@ -147,12 +176,47 @@ export default function TeleprompterWindow() {
           <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#64748b' }}>
             Teleprompter
           </span>
+          {question && (
+            <span
+              style={{
+                fontSize: '10px',
+                fontWeight: 600,
+                fontVariantNumeric: 'tabular-nums',
+                color: timerColor,
+                transition: 'color 0.5s',
+              }}
+            >
+              {formatElapsed(elapsedSeconds)}
+            </span>
+          )}
         </div>
 
         {/* Right: controls — no-drag zone */}
         <div
           style={{ display: 'flex', alignItems: 'center', gap: '4px', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          {/* Mode toggle: Prose ↔ Bullets */}
+          <button
+            onClick={() => setMode((m) => (m === 'prose' ? 'bullets' : 'prose'))}
+            title="Toggle prose / bullets"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '3px',
+              padding: '3px 7px',
+              borderRadius: '6px',
+              border: mode === 'bullets' ? '1px solid rgba(99,102,241,0.5)' : '1px solid rgba(255,255,255,0.1)',
+              background: mode === 'bullets' ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
+              color: mode === 'bullets' ? '#a5b4fc' : '#64748b',
+              fontSize: '10px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            {mode === 'prose' ? '¶ Prose' : '• Bullets'}
+          </button>
+
           {/* Scroll speed cycle: Off → Slow → Med → Fast → Off */}
           <button
             onClick={() => setScrollSpeed((s) => (s + 1) % 4)}
@@ -326,34 +390,67 @@ export default function TeleprompterWindow() {
           </div>
         )}
 
-        {/* Response text */}
-        {responseText && (
-          <p
-            style={{
-              fontSize: `${fontSize}px`,
-              lineHeight: 1.75,
-              letterSpacing: '0.01em',
-              color: '#f1f5f9',
-              whiteSpace: 'pre-wrap',
-              margin: 0,
-              fontWeight: 400,
-            }}
-          >
-            {responseText}
-            {isStreaming && (
-              <span
-                style={{
-                  display: 'inline-block',
-                  width: '2px',
-                  height: `${fontSize * 1.1}px`,
-                  background: '#60a5fa',
-                  marginLeft: '3px',
-                  verticalAlign: 'middle',
-                  animation: 'pulse 1s infinite',
-                }}
-              />
-            )}
-          </p>
+        {/* Bullets mode */}
+        {showBullets ? (
+          <ol style={{ margin: 0, paddingLeft: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: `${fontSize * 0.65}px` }}>
+            {analysis!.keyPoints.map((point, i) => (
+              <li key={i} style={{ display: 'flex', gap: `${fontSize * 0.5}px`, alignItems: 'flex-start' }}>
+                <span
+                  style={{
+                    fontSize: `${Math.round(fontSize * 0.75)}px`,
+                    fontWeight: 700,
+                    color: '#6366f1',
+                    minWidth: `${fontSize}px`,
+                    textAlign: 'right',
+                    flexShrink: 0,
+                    lineHeight: 1.75,
+                  }}
+                >
+                  {i + 1}.
+                </span>
+                <span
+                  style={{
+                    fontSize: `${fontSize}px`,
+                    lineHeight: 1.75,
+                    color: '#f1f5f9',
+                    fontWeight: 400,
+                  }}
+                >
+                  {point}
+                </span>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          /* Prose mode */
+          responseText && (
+            <p
+              style={{
+                fontSize: `${fontSize}px`,
+                lineHeight: 1.75,
+                letterSpacing: '0.01em',
+                color: '#f1f5f9',
+                whiteSpace: 'pre-wrap',
+                margin: 0,
+                fontWeight: 400,
+              }}
+            >
+              {responseText}
+              {isStreaming && (
+                <span
+                  style={{
+                    display: 'inline-block',
+                    width: '2px',
+                    height: `${fontSize * 1.1}px`,
+                    background: '#60a5fa',
+                    marginLeft: '3px',
+                    verticalAlign: 'middle',
+                    animation: 'pulse 1s infinite',
+                  }}
+                />
+              )}
+            </p>
+          )
         )}
 
       </div>

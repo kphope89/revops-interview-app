@@ -1,4 +1,4 @@
-export type AppScreen = 'setup' | 'interview' | 'settings'
+export type AppScreen = 'setup' | 'prep' | 'interview' | 'settings'
 
 export type ToneMode = 'conversational' | 'tight' | 'exec'
 
@@ -52,6 +52,27 @@ export interface PrepQuestion {
   question: string
   competency: string
   rationale: string
+}
+
+export interface HotCompetency {
+  label: string
+  coachingNote: string
+}
+
+export interface PrepKit {
+  narrative: string
+  talkingPoints: string[]
+  questionsToAsk: string[]
+  hotCompetencies: HotCompetency[]
+  powerPhrases: string[]
+}
+
+export type PrepKitStatus = 'idle' | 'loading' | 'ready' | 'error'
+
+export interface PrepKitState {
+  status: PrepKitStatus
+  kit: PrepKit | null
+  error?: string
 }
 
 export interface PrepQuestionsState {
@@ -134,6 +155,15 @@ export interface ElectronAPI {
 
   getProfile: () => Promise<UserProfile>
   saveProfile: (profile: UserProfile) => Promise<boolean>
+  parseResume: (resume: string) => Promise<{ success: boolean; parsed?: Partial<UserProfile>; error?: string }>
+
+  generatePrepKit: (payload: {
+    jobDescription: string
+    knowledgeContext: string
+    resume: string
+    profileSection: string
+    spotlightItems?: Array<{ title: string; type: string; content: string }>
+  }) => Promise<{ success: boolean; kit?: PrepKit; error?: string }>
 
   // Teleprompter window control
   openTeleprompter: (data: unknown) => void

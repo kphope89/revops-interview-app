@@ -255,6 +255,56 @@ app.whenReady().then(() => {
     return true
   })
 
+  ipcMain.handle('profile:parse-resume', async (_event, resume: string) => {
+    const apiKey = store.get('apiKey', '')
+    if (!apiKey) return { success: false, error: 'No API key configured.' }
+    if (!resume?.trim()) return { success: false, error: 'No resume text provided.' }
+
+    try {
+      const client = new Anthropic({ apiKey })
+      const message = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 600,
+        system: `You extract structured RevOps career data from a resume or professional summary. Return ONLY valid JSON — no preamble, no explanation, no markdown fences.
+
+Competency labels to use for topStrengths (pick the most relevant, max 5, use exact strings only):
+Revenue Strategy & GTM Planning | Sales Operations & Pipeline Management | Marketing Operations & Lead Management | Customer Success Operations | Data & Analytics | Technology Stack Management | Forecasting & Revenue Intelligence | Compensation & Quota Design | Process Design & Optimization | Cross-Functional Alignment | Change Management | AI-First RevOps Architecture | Prioritization & Portfolio Management | KPIs & Metrics
+
+Years experience buckets (use exact strings): "1-3 years" | "4-6 years" | "7-10 years" | "10+ years"
+
+Return this exact shape (omit a field or leave it empty string / empty array if not discernible):
+{
+  "name": "",
+  "currentTitle": "",
+  "currentCompany": "",
+  "yearsExperience": "",
+  "topStrengths": [],
+  "signatureMetrics": ["", "", ""],
+  "differentiator": ""
+}
+
+signatureMetrics: extract up to 3 specific, quantified achievements (e.g. "Reduced forecast error from 22% to 8% via Clari"). Leave as empty string if no metric available for that slot.`,
+        messages: [{ role: 'user', content: resume.trim() }]
+      })
+
+      const content = message.content[0]
+      if (content.type !== 'text') return { success: false, error: 'Unexpected response type.' }
+
+      const jsonMatch = content.text.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) return { success: false, error: 'Could not parse response.' }
+
+      const parsed = JSON.parse(jsonMatch[0])
+      // Ensure signatureMetrics is always length 3
+      if (!Array.isArray(parsed.signatureMetrics)) parsed.signatureMetrics = ['', '', '']
+      while (parsed.signatureMetrics.length < 3) parsed.signatureMetrics.push('')
+      parsed.signatureMetrics = parsed.signatureMetrics.slice(0, 3)
+
+      return { success: true, parsed }
+    } catch (err) {
+      return { success: false, error: String(err) }
+    }
+  })
+
   // ── IPC: Teleprompter window ────────────────────────────────────────────────
   ipcMain.on('teleprompter:open', (_event, questionData) => {
     if (!teleprompterWindow || teleprompterWindow.isDestroyed()) {
@@ -570,6 +620,109 @@ Return ONLY a valid JSON array. No preamble, no trailing explanation, no markdow
         }>
 
         return { success: true, questions: rawQuestions }
+      } catch (err) {
+        return { success: false, error: String(err) }
+      }
+    }
+  )
+
+  // ── IPC: Generate Prep Kit ────────────────────────────────────────────────
+  ipcMain.handle(
+    'claude:prep-kit',
+    async (
+      _event,
+      payload: {
+        jobDescription: string
+        knowledgeContext: string
+        resume: string
+        profileSection: string
+        spotlightItems?: Array<{ title: string; type: string; content: string }>
+      }
+    ) => {
+      const apiKey = store.get('apiKey', '')
+      const model = store.get('model', 'claude-sonnet-4-6')
+
+      if (!apiKey) return { success: false, error: 'No API key configured.' }
+
+      try {
+        const client = new Anthropic({ apiKey })
+
+        const candidateSection = payload.profileSection?.trim()
+          ? payload.profileSection.trim()
+          : payload.resume?.trim()
+          ? `## Candidate Background\n${payload.resume.trim()}`
+          : 'No candidate background provided.'
+
+        const spotlightSection = payload.spotlightItems?.length
+          ? `\n## Priority Stories — MUST Reference\nThe candidate specifically wants to feature these stories in this interview. You MUST weave them prominently into the narrative and at least 2 talking points. Reference the specific title, outcome, or metric from each:\n\n${
+              payload.spotlightItems
+                .map((s) => `### ${s.title} (${s.type})\n${s.content}`)
+                .join('\n\n')
+            }\n`
+          : ''
+
+        const systemPrompt = `You are an expert RevOps interview coach building a comprehensive Pre-Interview Prep Kit for a candidate.
+
+## RevOps Knowledge Base
+${payload.knowledgeContext}
+
+## Target Job
+${payload.jobDescription || 'No specific job description provided.'}
+
+## Candidate
+${candidateSection}
+${spotlightSection}
+## Competency Labels — use EXACT strings only:
+Revenue Strategy & GTM Planning | Sales Operations & Pipeline Management | Marketing Operations & Lead Management | Customer Success Operations | Data & Analytics | Technology Stack Management | Forecasting & Revenue Intelligence | Compensation & Quota Design | Process Design & Optimization | Cross-Functional Alignment | Change Management | AI-First RevOps Architecture | Prioritization & Portfolio Management | KPIs & Metrics
+
+## Your Task
+Generate a complete Pre-Interview Prep Kit with exactly these 5 sections:
+
+### 1. narrative
+2-3 paragraphs for "tell me about yourself," written as spoken prose tailored to this company and role. Open with the most interesting, specific thing about this candidate — NOT "I've been in RevOps for X years." Use first person. Reference the candidate's actual companies, metrics, and strengths naturally. Sound like a senior VP speaking in the room, not reading a slide deck.
+
+### 2. talkingPoints
+Exactly 3-5 non-negotiable messages to land regardless of what's asked. Each is a single declarative sentence at VP register — bold, specific, outcome-oriented. Reference the candidate's actual background where possible.
+
+### 3. questionsToAsk
+Exactly 5-7 sharp questions for the interviewer. Make them specific to THIS job description — not generic. They should signal strategic depth, reveal how the company operates, and demonstrate the candidate's seniority.
+
+### 4. hotCompetencies
+Top 3-5 of the 14 competency labels most likely to be tested given this specific job description. For each, write a 1-line coaching note specific to this candidate's background (e.g., "Lead with the Clari rebuild story"). Use exact competency label strings.
+
+### 5. powerPhrases
+Exactly 5-8 phrases or vocabulary patterns that signal seniority at VP / Senior Director level at this stage company. Format each as: "Phrase: [phrase] — [deployment note]"
+
+## Output
+Return ONLY valid JSON — no preamble, no markdown fences, no explanation:
+{
+  "narrative": "string with paragraphs separated by \\n\\n",
+  "talkingPoints": ["string", "string", "string"],
+  "questionsToAsk": ["string", "string", "string", "string", "string"],
+  "hotCompetencies": [{ "label": "exact competency label", "coachingNote": "1-line note" }],
+  "powerPhrases": ["Phrase: X — deployment note", "Phrase: Y — deployment note"]
+}`
+
+        const message = await client.messages.create({
+          model,
+          max_tokens: 2500,
+          system: systemPrompt,
+          messages: [
+            {
+              role: 'user',
+              content: 'Generate the complete Prep Kit for this candidate and role.'
+            }
+          ]
+        })
+
+        const content = message.content[0]
+        if (content.type !== 'text') return { success: false, error: 'Unexpected response type.' }
+
+        const jsonMatch = content.text.match(/\{[\s\S]*\}/)
+        if (!jsonMatch) return { success: false, error: 'Could not parse prep kit from response.' }
+
+        const kit = JSON.parse(jsonMatch[0])
+        return { success: true, kit }
       } catch (err) {
         return { success: false, error: String(err) }
       }

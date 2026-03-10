@@ -1,21 +1,28 @@
 import { useState, useEffect } from 'react'
-import { AppScreen, JobContext, Settings } from './types'
+import { AppScreen, JobContext, Settings, PrepKitState } from './types'
 import JobSetup from './components/JobSetup'
 import InterviewScreen from './components/InterviewScreen'
 import SettingsScreen from './components/Settings'
+import PrepKitScreen from './components/PrepKitScreen'
 import Header from './components/Header'
+import { getKnowledgeContext, buildUserKnowledgeSection } from './data/revops-knowledge'
+import { buildProfileSection } from './data/buildProfileSection'
 
 export default function App() {
   const [screen, setScreen] = useState<AppScreen>('setup')
   const [jobContext, setJobContext] = useState<JobContext | null>(null)
-  const [settings, setSettings] = useState<Settings>({ apiKey: '', model: 'claude-opus-4-5', resume: '', openaiApiKey: '' })
+  const [savedJob, setSavedJob] = useState<JobContext | null>(null)
+  const [settings, setSettings] = useState<Settings>({ apiKey: '', model: 'claude-sonnet-4-6', resume: '', openaiApiKey: '', toneMode: 'conversational' })
   const [hasApiKey, setHasApiKey] = useState(false)
+  const [prepKitState, setPrepKitState] = useState<PrepKitState>({ status: 'idle', kit: null })
 
   useEffect(() => {
-    // Load persisted settings on startup
     window.electronAPI.getSettings().then((s) => {
       setSettings(s)
       setHasApiKey(!!s.apiKey)
+    })
+    window.electronAPI.getSavedJobContext().then((j) => {
+      if (j) setSavedJob(j)
     })
   }, [])
 
@@ -28,7 +35,52 @@ export default function App() {
 
   const handleStartInterview = (job: JobContext) => {
     setJobContext(job)
+    setSavedJob(job)
+    window.electronAPI.saveJobContext(job)
+    setPrepKitState({ status: 'idle', kit: null })
+    setScreen('prep')
+  }
+
+  const handleGoLive = () => {
     setScreen('interview')
+  }
+
+  const handlePrepBack = () => {
+    setScreen('setup')
+  }
+
+  const handleGeneratePrepKit = async (spotlightIds: string[]) => {
+    if (!jobContext) return
+    setPrepKitState({ status: 'loading', kit: null })
+    try {
+      const profile = await window.electronAPI.getProfile()
+      const knowledgeItems = await window.electronAPI.getKnowledgeItems()
+      const profileSection = buildProfileSection(profile)
+      const knowledgeContext =
+        getKnowledgeContext() +
+        buildUserKnowledgeSection(knowledgeItems) +
+        (profileSection ? '\n\n' + profileSection : '')
+
+      const spotlightItems = knowledgeItems
+        .filter((item) => spotlightIds.includes(item.id))
+        .map((item) => ({ title: item.title, type: item.type, content: item.content }))
+
+      const result = await window.electronAPI.generatePrepKit({
+        jobDescription: `${jobContext.title} at ${jobContext.company}\n\n${jobContext.description}`,
+        knowledgeContext,
+        resume: profile.resume || settings.resume || '',
+        profileSection,
+        spotlightItems: spotlightItems.length > 0 ? spotlightItems : undefined
+      })
+
+      if (result.success && result.kit) {
+        setPrepKitState({ status: 'ready', kit: result.kit })
+      } else {
+        setPrepKitState({ status: 'error', kit: null, error: result.error })
+      }
+    } catch (err) {
+      setPrepKitState({ status: 'error', kit: null, error: String(err) })
+    }
   }
 
   const handleEndInterview = () => {
@@ -40,7 +92,7 @@ export default function App() {
       <Header
         screen={screen}
         onSettings={() => setScreen('settings')}
-        onBack={() => setScreen('setup')}
+        onBack={() => screen === 'prep' ? handlePrepBack() : setScreen('setup')}
         hasApiKey={hasApiKey}
       />
 
@@ -50,6 +102,16 @@ export default function App() {
             onStart={handleStartInterview}
             onSettings={() => setScreen('settings')}
             hasApiKey={hasApiKey}
+            initialJob={savedJob}
+          />
+        )}
+        {screen === 'prep' && jobContext && (
+          <PrepKitScreen
+            jobContext={jobContext}
+            prepKitState={prepKitState}
+            onGenerate={handleGeneratePrepKit}
+            onGoLive={handleGoLive}
+            onBack={handlePrepBack}
           />
         )}
         {screen === 'interview' && jobContext && (
@@ -57,6 +119,7 @@ export default function App() {
             jobContext={jobContext}
             settings={settings}
             onEnd={handleEndInterview}
+            prepKit={prepKitState.kit}
           />
         )}
         {screen === 'settings' && (

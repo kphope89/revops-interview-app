@@ -5,6 +5,7 @@ interface Props {
   onStart: (job: JobContext) => void
   onSettings: () => void
   hasApiKey: boolean
+  initialJob?: JobContext | null
 }
 
 const EXAMPLE_JOBS = [
@@ -28,15 +29,19 @@ const HOW_IT_WORKS = [
   { icon: '📺', text: 'Pop out the teleprompter to read your response hands-free' },
 ]
 
-export default function JobSetup({ onStart, onSettings, hasApiKey }: Props) {
+export default function JobSetup({ onStart, onSettings, hasApiKey, initialJob }: Props) {
   const [inputMode, setInputMode] = useState<'paste' | 'url'>('paste')
   const [url, setUrl] = useState('')
-  const [title, setTitle] = useState('')
-  const [company, setCompany] = useState('')
-  const [description, setDescription] = useState('')
+  const [title, setTitle] = useState(
+    initialJob?.title && initialJob.title !== 'Untitled Role' ? initialJob.title : ''
+  )
+  const [company, setCompany] = useState(
+    initialJob?.company && initialJob.company !== 'Unknown Company' ? initialJob.company : ''
+  )
+  const [description, setDescription] = useState(initialJob?.description ?? '')
   const [fetchingUrl, setFetchingUrl] = useState(false)
   const [urlError, setUrlError] = useState('')
-  const [fetchedUrl, setFetchedUrl] = useState<string | undefined>(undefined)
+  const [fetchedUrl, setFetchedUrl] = useState<string | undefined>(initialJob?.url)
 
   const handleFetchUrl = async () => {
     if (!url.trim()) return

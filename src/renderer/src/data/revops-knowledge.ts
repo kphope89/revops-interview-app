@@ -575,6 +575,38 @@ When answering any interview question, always anchor to:
 Senior Director or VP level. Strategic. Structured. Outcome-oriented. Measured. No hype.
 `
 
+import { KnowledgeItem, KnowledgeItemType } from '../types'
+
+const TYPE_LABELS: Record<KnowledgeItemType, string> = {
+  project: 'Projects',
+  achievement: 'Achievements',
+  framework: 'Frameworks & Methodologies',
+  brief: 'Additional Context'
+}
+
+export function buildUserKnowledgeSection(items: KnowledgeItem[]): string {
+  if (!items?.length) return ''
+
+  const byType = items.reduce<Record<string, KnowledgeItem[]>>((acc, item) => {
+    if (!acc[item.type]) acc[item.type] = []
+    acc[item.type].push(item)
+    return acc
+  }, {})
+
+  const typeOrder: KnowledgeItemType[] = ['project', 'achievement', 'framework', 'brief']
+  const sections = typeOrder
+    .filter((t) => byType[t]?.length)
+    .map((t) => {
+      const entries = byType[t]
+        .map((item) => `### ${item.title}\n${item.content}`)
+        .join('\n\n')
+      return `#### ${TYPE_LABELS[t]}\n\n${entries}`
+    })
+    .join('\n\n')
+
+  return `\n\n## Candidate Knowledge Base\n> Treat as authoritative context about this specific candidate when relevant to the question.\n\n${sections}\n`
+}
+
 export function getKnowledgeContext(topics?: string[]): string {
   // For now, return the full knowledge base
   // In future, could filter by relevant topics based on question type
